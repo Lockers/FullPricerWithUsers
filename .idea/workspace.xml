@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/.env" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/FullPricerWithUsers.iml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/dictionaries/project.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/core/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/core/config.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/core/errors.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/core/logging.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/db/mongo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/constants.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/issues_repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/router.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/sku.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/circuit_breaker.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/controller.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/learner.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/limiter.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/state.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/activation.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/filters.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/groups_filter_models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/listings_repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle_router.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_select_schemas.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_select_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/schemas.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_listings.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/tradein_listings.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/backoff.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/cache.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/exceptions.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/headers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/http_utils.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/orders/pricing_groups_bridge.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/orders/repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/orders/router.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/orders/service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/repaircost/pricing_groups_sync.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/repaircost/repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/repaircost/router.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/repaircost/schemas.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/repaircost/service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/users/repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/users/router.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/users/schemas.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/users/service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/users/settings_repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/users/settings_schemas.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/users/settings_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/main.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 6
+}</component>
+  <component name="ProjectId" id="37HpsibSc6Q4pettiuwrZUoYMSn" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\mattl\PycharmProjects\FullPricerWithUsers\app\features\backmarket\transport" />
+      <recent name="C:\Users\mattl\PycharmProjects\FullPricerWithUsers\app\features\backmarket\sell" />
+      <recent name="C:\Users\mattl\PycharmProjects\FullPricerWithUsers\app" />
+    </key>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-3aa1da707db6-JavaScript-PY-252.27397.106" />
+        <option value="bundled-python-sdk-4e2b1448bda8-9a97661f3031-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-252.27397.106" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="" />
+      <created>1766570060010</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1766570060010</updated>
+      <workItem from="1766570061079" duration="30391000" />
+      <workItem from="1766695150693" duration="33046000" />
+      <workItem from="1766866098108" duration="55373000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>
