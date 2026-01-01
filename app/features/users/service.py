@@ -12,12 +12,22 @@ from pymongo.errors import PyMongoError
 from app.core.errors import NotFoundError
 from app.features.users.repo import UsersRepo
 from app.features.users.schemas import UserCreate, UserRead, UserUpdate
+from app.features.users.settings_repo import UserSettingsRepo
+from app.features.users.settings_schemas import TradeinConfig
+from app.features.users.settings_service import _build_bm_user_agent, _header_token
 
 logger = logging.getLogger(__name__)
 
 
 async def create_user(db: AsyncIOMotorDatabase, data: UserCreate) -> UserRead:
+    """
+    Create the user identity record AND ensure a default user_settings doc exists.
+
+    Historically, /users created only the user identity doc. The UI expects user_settings
+    to exist, so we create defaults here to make new users usable immediately.
+    """
     repo = UsersRepo(db)
+    settings_repo = UserSettingsRepo(db)
 
     logger.info("create_user:start email=%s company=%s", str(data.email), data.company_name)
     doc = await repo.create(
@@ -25,8 +35,44 @@ async def create_user(db: AsyncIOMotorDatabase, data: UserCreate) -> UserRead:
         name=data.name,
         company_name=data.company_name,
     )
-    logger.info("create_user:done user_id=%s", doc.get("id"))
+    user_id = doc["id"]
 
+    # Ensure user_settings exists with sensible defaults (no API key yet).
+    company_token = _header_token(data.company_name, "Company")
+    integration_name = f"{company_token}BMpricer"
+    user_agent = _build_bm_user_agent(data.company_name, integration_name, str(data.email))
+    tradein_cfg = TradeinConfig()
+
+    try:
+        await settings_repo.upsert(
+            user_id,
+            {
+                "bm_api_key": None,
+                "bm_user_id": None,
+                "bm_seller_id": None,
+                "integration_name": integration_name,
+                "user_agent": user_agent,
+                "market_language": "en-gb",
+                "daily_trade_limit": None,
+                "daily_spend_limit": None,
+                "auto_pause_on_limit": False,
+                "tradein_config": tradein_cfg.model_dump(),
+            },
+        )
+    except Exception:
+        logger.exception("create_user:settings_upsert_failed user_id=%s; attempting rollback", user_id)
+        # Best-effort cleanup
+        try:
+            await settings_repo.delete(user_id)
+        except Exception:
+            logger.exception("create_user:rollback_settings_delete_failed user_id=%s", user_id)
+        try:
+            await repo.delete(user_id)
+        except Exception:
+            logger.exception("create_user:rollback_user_delete_failed user_id=%s", user_id)
+        raise
+
+    logger.info("create_user:done user_id=%s", user_id)
     return UserRead(**doc)
 
 
@@ -90,4 +136,5 @@ async def delete_user(db: AsyncIOMotorDatabase, user_id: str) -> None:
     )
 
     logger.info("delete_user:done user_id=%s", user_id)
+
 

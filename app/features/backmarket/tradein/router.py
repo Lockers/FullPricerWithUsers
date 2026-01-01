@@ -27,7 +27,7 @@ from app.features.backmarket.tradein.tradein_listings import (
     sync_tradein_listings_to_db,
 )
 from app.features.backmarket.tradein.competitors_service import (
-    run_tradein_competitor_refresh_for_user,
+    run_tradein_competitor_refresh_for_user, stage1_set_all_to_one,
 )
 
 router = APIRouter(prefix="/tradein", tags=["backmarket:tradein"])
@@ -163,4 +163,25 @@ async def tradein_competitors_diag(
         },
         "sample": sample,
     }
+
+@router.post("/competitors/{user_id}/set-to-one")
+async def tradein_set_all_to_one(
+    user_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    market: str = Query("GB", min_length=2, max_length=4),
+    currency: str = Query("GBP", min_length=3, max_length=3),
+    concurrency: int = Query(10, ge=1, le=200),
+    limit: int | None = Query(None, ge=1, le=100000),
+    include_results: bool = Query(False),
+):
+    summary, _ok_refs = await stage1_set_all_to_one(
+        db,
+        user_id=user_id,
+        market=market,
+        currency=currency,
+        concurrency=concurrency,
+        limit=limit,
+        include_results=include_results,
+    )
+    return summary
 

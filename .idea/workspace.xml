@@ -4,76 +4,18 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="">
+    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="First commit">
       <change afterPath="$PROJECT_DIR$/.env" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/FullPricerWithUsers.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/dictionaries/project.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/core/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/core/config.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/core/errors.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/core/logging.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/db/mongo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/constants.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/issues_repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/sku.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/circuit_breaker.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/controller.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/learner.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/limiter.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/rate/state.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/activation.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/filters.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/groups_filter_models.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/listings_repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle_router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_select_schemas.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_select_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/schemas.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_models.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_listings.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/tradein_listings.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/backoff.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/cache.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/exceptions.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/headers.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/http_utils.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/orders/pricing_groups_bridge.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/orders/repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/orders/router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/orders/service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/repaircost/pricing_groups_sync.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/repaircost/repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/repaircost/router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/repaircost/schemas.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/repaircost/service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/users/repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/users/router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/users/schemas.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/users/service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/users/settings_repo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/users/settings_schemas.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/features/users/settings_service.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/users/schemas.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/schemas.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/users/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/users/settings_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/settings_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -144,8 +86,18 @@
       <updated>1766570060010</updated>
       <workItem from="1766570061079" duration="30391000" />
       <workItem from="1766695150693" duration="33046000" />
-      <workItem from="1766866098108" duration="55373000" />
+      <workItem from="1766866098108" duration="64603000" />
+      <workItem from="1767270552372" duration="6150000" />
     </task>
+    <task id="LOCAL-00001" summary="First commit">
+      <option name="closed" value="true" />
+      <created>1767137741271</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1767137741271</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -161,5 +113,9 @@
         </entry>
       </map>
     </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="First commit" />
+    <option name="LAST_COMMIT_MESSAGE" value="First commit" />
   </component>
 </project>

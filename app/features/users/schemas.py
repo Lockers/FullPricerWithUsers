@@ -49,8 +49,8 @@ class UserInitRequest(BaseModel):
     company_name: str
 
     bm_api_key: str
-    bm_user_id: str
-    bm_seller_id: str
+    bm_user_id: Optional[str] = None
+    bm_seller_id: Optional[str] = None
 
     program_name: Optional[str] = None
     market_language: Optional[str] = "en-gb"
@@ -61,4 +61,5 @@ class UserInitResponse(UserRead):
     market_language: Optional[str] = None
     integration_name: Optional[str] = None
     user_agent: Optional[str] = None
+
 

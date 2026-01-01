@@ -91,6 +91,52 @@ def _to_user_settings_read(user_id: str, doc: Dict[str, Any]) -> UserSettingsRea
     )
 
 
+async def _ensure_user_settings_doc(db: AsyncIOMotorDatabase, user_id: str) -> Dict[str, Any]:
+    """
+    Ensure a user_settings document exists for this user.
+
+    Historically, some users may have been created via POST /users (identity only),
+    which did not create a user_settings document. The UI expects settings to exist.
+    """
+    settings_repo = UserSettingsRepo(db)
+
+    doc = await settings_repo.get(user_id)
+    if doc:
+        return doc
+
+    users_repo = UsersRepo(db)
+    user_doc = await users_repo.get(user_id)
+    if not user_doc:
+        raise NotFoundError(code="user_not_found", message="User not found", details={"user_id": user_id})
+
+    company_name = (user_doc.get("company_name") or "").strip() or "Company"
+    contact_email = (user_doc.get("email") or "").strip() or "contact@example.com"
+
+    company_token = _header_token(company_name, "Company")
+    integration_name = f"{company_token}BMpricer"
+    user_agent = _build_bm_user_agent(company_name, integration_name, contact_email)
+
+    tradein_cfg = TradeinConfig()
+
+    logger.info("ensure_user_settings_defaults user_id=%s", user_id)
+
+    return await settings_repo.upsert(
+        user_id,
+        {
+            "bm_api_key": None,
+            "bm_user_id": None,
+            "bm_seller_id": None,
+            "integration_name": integration_name,
+            "user_agent": user_agent,
+            "market_language": "en-gb",
+            "daily_trade_limit": None,
+            "daily_spend_limit": None,
+            "auto_pause_on_limit": False,
+            "tradein_config": tradein_cfg.model_dump(),
+        },
+    )
+
+
 async def init_user_with_bm(db: AsyncIOMotorDatabase, data: UserInitRequest) -> UserInitResponse:
     users_repo = UsersRepo(db)
     settings_repo = UserSettingsRepo(db)
@@ -166,11 +212,7 @@ async def init_user_with_bm(db: AsyncIOMotorDatabase, data: UserInitRequest) -> 
 
 
 async def get_user_settings(db: AsyncIOMotorDatabase, user_id: str) -> UserSettingsRead:
-    settings_repo = UserSettingsRepo(db)
-    doc = await settings_repo.get(user_id)
-    if not doc:
-        raise NotFoundError(code="user_settings_not_found", message="User settings not found", details={"user_id": user_id})
-
+    doc = await _ensure_user_settings_doc(db, user_id)
     return _to_user_settings_read(user_id, doc)
 
 
@@ -179,8 +221,17 @@ async def update_user_settings(db: AsyncIOMotorDatabase, user_id: str, patch: Us
 
     update: Dict[str, Any] = patch.model_dump(exclude_unset=True)
 
+    # Normalize strings: treat blank as "no change" (so it won't overwrite stored values with "").
+    for k, v in list(update.items()):
+        if isinstance(v, str):
+            s = v.strip()
+            update[k] = s if s else None
+
     if "bm_api_key" in update and update["bm_api_key"] is not None:
         update["bm_api_key"] = _normalise_bm_api_key(update["bm_api_key"])
+
+    # Ensure settings doc exists for historic users created without settings.
+    await _ensure_user_settings_doc(db, user_id)
 
     logger.info("update_user_settings user_id=%s fields=%s", user_id, sorted(update.keys()))
 
@@ -191,9 +242,7 @@ async def update_user_settings(db: AsyncIOMotorDatabase, user_id: str, patch: Us
 async def update_tradein_config(db: AsyncIOMotorDatabase, user_id: str, patch: TradeinConfigUpdate) -> UserSettingsRead:
     settings_repo = UserSettingsRepo(db)
 
-    doc = await settings_repo.get(user_id)
-    if not doc:
-        raise NotFoundError(code="user_settings_not_found", message="User settings not found", details={"user_id": user_id})
+    doc = await _ensure_user_settings_doc(db, user_id)
 
     # IMPORTANT:
     # - exclude_none prevents writing explicit nulls into persisted tradein_config
@@ -224,10 +273,7 @@ async def get_user_bm_credentials(db: AsyncIOMotorDatabase, user_id: str) -> Dic
     - bm_api_key (RAW token; transport/headers.py will add 'Basic ')
     - user_agent
     """
-    settings_repo = UserSettingsRepo(db)
-    doc = await settings_repo.get(user_id)
-    if not doc:
-        raise NotFoundError(code="user_settings_not_found", message="User settings not found", details={"user_id": user_id})
+    doc = await _ensure_user_settings_doc(db, user_id)
 
     bm_api_key = (doc.get("bm_api_key") or "").strip()
     user_agent = (doc.get("user_agent") or "").strip()
@@ -253,4 +299,5 @@ async def get_user_bm_credentials(db: AsyncIOMotorDatabase, user_id: str) -> Dic
         "bm_seller_id": doc.get("bm_seller_id"),
         "integration_name": doc.get("integration_name"),
     }
+
 

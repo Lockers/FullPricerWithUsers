@@ -22,6 +22,7 @@ from app.features.backmarket.sell.sell_anchor_service import (
     update_sell_anchor_settings_for_user,
     recompute_sell_anchor_for_group, recompute_sell_anchors_for_user,
 )
+from app.features.backmarket.sell.service import run_price_all_for_user
 
 router = APIRouter(prefix="/bm/sell", tags=["backmarket:sell"])
 
@@ -67,7 +68,7 @@ async def sync_sell_listings(
 async def get_stored_sell_listings(
     user_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    limit: int = Query(25, ge=1, le=500),
+    limit: int = Query(25, ge=1, le=5000),
 ):
     repo = SellListingsRepo(db)
     count = await repo.count_for_user(user_id)
@@ -190,3 +191,30 @@ async def put_anchor_settings(
         return saved
     recomputed = await recompute_sell_anchors_for_user(db, user_id)
     return {"settings": saved, "recompute": recomputed}
+
+@router.post("/pricing-cycle/{user_id}/all")
+async def price_all(
+    user_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+
+    sell_wait_seconds: int = Query(180, ge=0, le=1800),
+    sell_max_backbox_attempts: int = Query(3, ge=1, le=10),
+
+    tradein_market: str = Query("GB", min_length=2, max_length=4),
+    tradein_currency: str = Query("GBP", min_length=3, max_length=3),
+    tradein_wait_seconds: int = Query(60, ge=0, le=600),
+
+    include_stage_results: bool = Query(False),
+    include_item_results: bool = Query(False),
+):
+    return await run_price_all_for_user(
+        db,
+        user_id=user_id,
+        sell_wait_seconds=sell_wait_seconds,
+        sell_max_backbox_attempts=sell_max_backbox_attempts,
+        tradein_market=tradein_market,
+        tradein_currency=tradein_currency,
+        tradein_wait_seconds=tradein_wait_seconds,
+        include_stage_results=include_stage_results,
+        include_item_results=include_item_results,
+    )

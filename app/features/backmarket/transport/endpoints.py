@@ -23,7 +23,7 @@ class EndpointConfig:
 # Tune these based on production observations.
 ENDPOINTS: dict[str, EndpointConfig] = {
     "sell_listings_get": EndpointConfig(base_rps=10, min_rps=1, max_rps=40),
-    "sell_listing_update": EndpointConfig(base_rps=4, min_rps=1, max_rps=12),
+    "sell_listing_update": EndpointConfig(base_rps=4, min_rps=1, max_rps=10),
     "sell_orders_get": EndpointConfig(base_rps=6, min_rps=1, max_rps=20),
 }
 

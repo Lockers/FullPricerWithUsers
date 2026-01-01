@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 from app.core.config import config
 from app.core.errors import register_exception_handlers
@@ -36,6 +37,14 @@ async def lifespan(application: FastAPI):
 
 app = FastAPI(title=config.app_name, lifespan=lifespan)
 register_exception_handlers(app)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For dev. Restrict in prod
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(users_router)
 app.include_router(bm_router)

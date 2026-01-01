@@ -51,6 +51,7 @@ from app.features.backmarket.sell.backbox import (
 from app.features.backmarket.sell.sell_anchor_service import recompute_sell_anchors_for_user
 from app.features.backmarket.sell.sell_listings import sync_sell_listings_for_user
 from app.features.backmarket.transport.exceptions import BMClientError
+from app.features.orders.service import sync_bm_orders_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -520,7 +521,6 @@ async def run_sell_pricing_cycle_for_user(
 
     # 6) Recompute group-level sell anchors (lowest net sell price, viability, etc.)
     t0 = time.perf_counter()
-    sell_anchor_recompute_res: Optional[Dict[str, Any]] = None
     try:
         sell_anchor_recompute_res = await recompute_sell_anchors_for_user(
             db,
@@ -546,6 +546,30 @@ async def run_sell_pricing_cycle_for_user(
             exc,
         )
         sell_anchor_recompute_res = {"error": str(exc)}
+    # 7) Sync orders (incremental) + apply to pricing_groups
+    t0 = time.perf_counter()
+    try:
+        orders_sync_res = await sync_bm_orders_for_user(
+            db,
+            user_id=user_id,
+            full=False,          # incremental default
+            page_size=50,        # default in service
+            overlap_seconds=300, # default in service
+        )
+        logger.info(
+            "[sell_pricing_cycle] orders_sync DONE user_id=%s pages=%s fetched=%s upserted_new=%s elapsed=%.3fs",
+            user_id,
+            orders_sync_res.get("pages"),
+            orders_sync_res.get("fetched_orders"),
+            orders_sync_res.get("upserted_new"),
+            time.perf_counter() - t0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[sell_pricing_cycle] orders_sync ERROR user_id=%s err=%r", user_id, exc)
+        orders_sync_res = {"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}
+
+    timings["orders_sync"] = time.perf_counter() - t0
+
 
     timings["total"] = time.perf_counter() - start_total
     finished_at_dt = _now()
@@ -588,6 +612,7 @@ async def run_sell_pricing_cycle_for_user(
         "backbox_then_deactivate": backbox_res,
         "cleanup_deactivate_session": cleanup_res,
         "sell_anchor_recompute": sell_anchor_recompute_res,
+        "orders_sync": orders_sync_res,
         "timings": timings,
         "started_at": started_at_dt.isoformat(),
         "finished_at": finished_at_dt.isoformat(),
