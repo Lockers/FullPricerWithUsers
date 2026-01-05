@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-
-SETTINGS_COL = "sell_anchor_settings"
 PRICING_GROUPS_COL = "pricing_groups"
-SELL_LISTINGS_COL = "bm_sell_listings"
+SELL_MAX_PRICES_COL = "pricing_sell_max_prices"
+ANCHOR_SETTINGS_COL = "pricing_sell_anchor_settings"
 
 
 def _now() -> datetime:
@@ -18,31 +17,25 @@ def _now() -> datetime:
 
 
 async def get_user_settings_doc(db: AsyncIOMotorDatabase, user_id: str) -> Optional[Dict[str, Any]]:
-    return await db[SETTINGS_COL].find_one({"user_id": user_id}, projection={"_id": 0})
+    return await db[ANCHOR_SETTINGS_COL].find_one({"user_id": user_id})
 
 
-async def upsert_user_settings_doc(db: AsyncIOMotorDatabase, user_id: str, doc: Dict[str, Any]) -> Dict[str, Any]:
+async def upsert_user_settings_doc(db: AsyncIOMotorDatabase, user_id: str, update: Dict[str, Any]) -> Dict[str, Any]:
     now = _now()
-    to_set = dict(doc)
-    to_set["updated_at"] = now
-
-    await db[SETTINGS_COL].update_one(
+    await db[ANCHOR_SETTINGS_COL].update_one(
         {"user_id": user_id},
-        {
-            "$set": to_set,
-            "$setOnInsert": {"user_id": user_id, "created_at": now},
-        },
+        {"$set": {**update, "user_id": user_id, "updated_at": now}, "$setOnInsert": {"created_at": now}},
         upsert=True,
     )
-    saved = await get_user_settings_doc(db, user_id)
-    return saved or {"user_id": user_id, **doc, "created_at": now, "updated_at": now}
+    doc = await db[ANCHOR_SETTINGS_COL].find_one({"user_id": user_id})
+    return doc or {"user_id": user_id, **update, "created_at": None, "updated_at": now}
 
 
-async def find_group_id_for_listing_ref(
-    db: AsyncIOMotorDatabase,
-    user_id: str,
-    listing_ref: str,
-) -> Optional[ObjectId]:
+async def get_pricing_group(db: AsyncIOMotorDatabase, user_id: str, group_id: ObjectId) -> Optional[Dict[str, Any]]:
+    return await db[PRICING_GROUPS_COL].find_one({"_id": group_id, "user_id": user_id})
+
+
+async def find_group_id_for_listing_ref(db: AsyncIOMotorDatabase, user_id: str, listing_ref: str) -> Optional[ObjectId]:
     doc = await db[PRICING_GROUPS_COL].find_one(
         {"user_id": user_id, "listings.bm_listing_id": listing_ref},
         projection={"_id": 1},
@@ -50,96 +43,78 @@ async def find_group_id_for_listing_ref(
     return doc.get("_id") if doc else None
 
 
-async def get_pricing_group(
+async def update_pricing_group_sell_anchor(db: AsyncIOMotorDatabase, group_id: ObjectId, sell_anchor: Dict[str, Any]) -> None:
+    now = _now()
+    await db[PRICING_GROUPS_COL].update_one(
+        {"_id": group_id},
+        {"$set": {"sell_anchor": sell_anchor, "sell_anchor_updated_at": now, "updated_at": now}},
+    )
+
+
+async def update_pricing_group_manual_sell_anchor_gross(
     db: AsyncIOMotorDatabase,
     user_id: str,
     group_id: ObjectId,
-) -> Optional[Dict[str, Any]]:
-    return await db[PRICING_GROUPS_COL].find_one({"_id": group_id, "user_id": user_id})
+    manual_gross: Optional[float],
+) -> bool:
+    """Set or clear the per-group manual sell anchor (gross).
 
+    Stored at the pricing_group top-level as `manual_sell_anchor_gross`.
+    `sell_anchor_service._build_sell_anchor_for_group_doc` reads this field when computing anchors.
+    """
+    now = _now()
+    update: Dict[str, Any] = {"$set": {"updated_at": now}}
 
-async def update_pricing_group_sell_anchor(
-    db: AsyncIOMotorDatabase,
-    group_id: ObjectId,
-    *,
-    sell_anchor: Dict[str, Any],
-) -> None:
-    await db[PRICING_GROUPS_COL].update_one(
-        {"_id": group_id},
-        {
-            "$set": {
-                "sell_anchor": sell_anchor,
-                "updated_at": _now(),
-            }
-        },
-    )
+    if manual_gross is None:
+        update["$unset"] = {"manual_sell_anchor_gross": ""}
+    else:
+        update["$set"]["manual_sell_anchor_gross"] = float(manual_gross)
+
+    res = await db[PRICING_GROUPS_COL].update_one({"_id": group_id, "user_id": user_id}, update)
+    return bool(res.matched_count)
 
 
 async def list_pricing_groups_for_user(
     db: AsyncIOMotorDatabase,
     user_id: str,
     *,
-    mongo_filter: Optional[Dict[str, Any]] = None,
-    limit: int = 25,
-    skip: int = 0,
-) -> List[Dict[str, Any]]:
+    groups_filter: Optional[Dict[str, Any]] = None,
+    projection: Optional[Dict[str, Any]] = None,
+    limit: Optional[int] = None,
+) -> list[Dict[str, Any]]:
     q: Dict[str, Any] = {"user_id": user_id}
-    if mongo_filter:
-        q.update(mongo_filter)
+    if groups_filter:
+        q.update(groups_filter)
 
-    projection = {
-        "_id": 1,
-        "trade_sku": 1,
-        "group_key": 1,
-        "brand": 1,
-        "model": 1,
-        "storage_gb": 1,
-        "listings_count": 1,
-        "updated_at": 1,
-        "sell_anchor.gross_used": 1,
-        "sell_anchor.net_used": 1,
-        "sell_anchor.source_used": 1,
-        "sell_anchor.reason": 1,
-        "sell_anchor.needs_manual_anchor": 1,
-    }
+    cur = db[PRICING_GROUPS_COL].find(q, projection=projection)
+    if limit is not None:
+        cur = cur.limit(int(limit))
 
-    cur = (
-        db[PRICING_GROUPS_COL]
-        .find(q, projection=projection)
-        .sort("updated_at", -1)
-        .skip(int(skip))
-        .limit(int(limit))
-    )
-
-    out: List[Dict[str, Any]] = []
-    async for doc in cur:
-        doc["_id"] = str(doc["_id"])
-        out.append(doc)
+    out: list[Dict[str, Any]] = []
+    async for g in cur:
+        out.append(g)
     return out
 
 
 async def get_sell_max_prices_for_listings(
     db: AsyncIOMotorDatabase,
     user_id: str,
-    listing_ids: List[str],
+    listing_ids: list[str],
 ) -> Dict[str, float]:
     if not listing_ids:
         return {}
 
-    cur = db[SELL_LISTINGS_COL].find(
-        {"user_id": user_id, "listing_id": {"$in": listing_ids}},
-        projection={"listing_id": 1, "raw.max_price": 1},
+    cur = db[SELL_MAX_PRICES_COL].find(
+        {"user_id": user_id, "bm_listing_id": {"$in": listing_ids}},
+        projection={"bm_listing_id": 1, "max_price": 1},
     )
 
     out: Dict[str, float] = {}
     async for doc in cur:
-        lid = str(doc.get("listing_id") or "").strip()
-        raw = doc.get("raw") or {}
-        mp = raw.get("max_price")
-        try:
-            if lid and mp is not None:
-                out[lid] = float(mp)
-        except (TypeError, ValueError):
-            continue
+        lid = str(doc.get("bm_listing_id") or "").strip()
+        mp = doc.get("max_price")
+        if lid and isinstance(mp, (int, float)) and mp > 0:
+            out[lid] = float(mp)
     return out
+
 

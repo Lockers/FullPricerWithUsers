@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.errors import NotFoundError
+from app.features.repaircost.pricing_groups_sync import (
+    apply_repair_cost_snapshot_to_pricing_groups,
+    clear_repair_cost_snapshot_from_pricing_groups,
+)
 from app.features.repaircost.repo import RepairCostsRepo
 from app.features.repaircost.schemas import (
     RepairCostPatchRequest,
@@ -12,10 +17,6 @@ from app.features.repaircost.schemas import (
     RepairCostUpsert,
     RepairModelStatus,
     RepairModelsResponse,
-)
-from app.features.repaircost.pricing_groups_sync import (
-    apply_repair_cost_to_pricing_groups,
-    clear_repair_cost_from_pricing_groups,
 )
 
 
@@ -37,12 +38,60 @@ def _norm_brand(s: str) -> str:
 
 def _norm_model(s: str) -> str:
     # Canonicalize spacing + uppercase so joins are stable.
-    # Example: "15  pro  max" -> "15 PRO MAX"
     return " ".join(str(s).strip().upper().split())
 
 
-def _to_read(doc: Dict[str, Any]) -> RepairCostRead:
-    return RepairCostRead(**doc)
+def _to_float(x: Any, default: float = 0.0) -> float:
+    if isinstance(x, (int, float)):
+        v = float(x)
+        return v if math.isfinite(v) else default
+    if isinstance(x, str):
+        s = x.strip()
+        if not s:
+            return default
+        try:
+            v = float(s)
+            return v if math.isfinite(v) else default
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_costs_for_read(costs: Any) -> Dict[str, float]:
+    """
+    Ensure the costs dict contains ALL required keys for RepairCosts.
+    This prevents older docs (from previous schemas) from breaking reads.
+
+    Minimal mapping:
+      - housing <- housing OR full_housing
+      - screen_refurb_in_house <- screen_refurb_in_house OR screen_refurb
+    """
+    c = costs if isinstance(costs, dict) else {}
+
+    out = {
+        "screen_replacement": _to_float(c.get("screen_replacement"), 0.0),
+        "screen_refurb_in_house": _to_float(
+            c.get("screen_refurb_in_house", c.get("screen_refurb")), 0.0
+        ),
+        "screen_refurb_external": _to_float(c.get("screen_refurb_external"), 0.0),
+        "battery": _to_float(c.get("battery"), 0.0),
+        "housing": _to_float(c.get("housing", c.get("full_housing")), 0.0),
+    }
+    return out
+
+
+def _normalize_doc_for_read(doc: Dict[str, Any]) -> Dict[str, Any]:
+    d = dict(doc)
+
+    d["market"] = _norm_market(d.get("market") or "GB")
+    d["currency"] = _norm_currency(d.get("currency") or "GBP")
+    d["brand"] = _norm_brand(d.get("brand") or "")
+    d["model"] = _norm_model(d.get("model") or "")
+    d["notes"] = d.get("notes")
+
+    d["costs"] = _coerce_costs_for_read(d.get("costs"))
+
+    return d
 
 
 async def upsert_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: RepairCostUpsert) -> RepairCostRead:
@@ -62,15 +111,11 @@ async def upsert_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: Re
         costs=payload.costs.model_dump(),
         notes=payload.notes,
     )
-    await apply_repair_cost_to_pricing_groups(
-        db,
-        user_id=user_id,
-        market=mkt,
-        brand=brand,
-        model=model,
-        repair_cost_doc=doc,
-    )
-    return _to_read(doc)
+
+    # Push snapshot into pricing_groups immediately (per user, per model family)
+    await apply_repair_cost_snapshot_to_pricing_groups(db, user_id=user_id, repair_cost_doc=doc)
+
+    return RepairCostRead(**_normalize_doc_for_read(doc))
 
 
 async def list_repair_costs(
@@ -89,7 +134,7 @@ async def list_repair_costs(
     md = _norm_model(model) if model is not None else None
 
     docs = await repo.list_for_user(user_id=user_id, market=mkt, brand=b, model=md, limit=limit)
-    return [RepairCostRead(**d) for d in docs]
+    return [RepairCostRead(**_normalize_doc_for_read(d)) for d in docs]
 
 
 async def get_repair_cost_one(
@@ -113,7 +158,7 @@ async def get_repair_cost_one(
             message="Repair cost not found",
             details={"user_id": user_id, "market": mkt, "brand": b, "model": md},
         )
-    return _to_read(doc)
+    return RepairCostRead(**_normalize_doc_for_read(doc))
 
 
 async def patch_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: RepairCostPatchRequest) -> RepairCostRead:
@@ -137,16 +182,11 @@ async def patch_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: Rep
             update[f"costs.{k}"] = v
 
     doc = await repo.patch_one(user_id=user_id, market=mkt, brand=b, model=md, update_fields=update)
-    await apply_repair_cost_to_pricing_groups(
-        db,
-        user_id=user_id,
-        market=mkt,
-        brand=b,
-        model=md,
-        repair_cost_doc=doc,
-    )
-    return _to_read(doc)
 
+    # Push snapshot into pricing_groups immediately
+    await apply_repair_cost_snapshot_to_pricing_groups(db, user_id=user_id, repair_cost_doc=doc)
+
+    return RepairCostRead(**_normalize_doc_for_read(doc))
 
 
 async def delete_repair_cost(
@@ -170,13 +210,9 @@ async def delete_repair_cost(
             message="Repair cost not found",
             details={"user_id": user_id, "market": mkt, "brand": b, "model": md},
         )
-    await clear_repair_cost_from_pricing_groups(
-        db,
-        user_id=user_id,
-        market=mkt,
-        brand=b,
-        model=md,
-    )
+
+    # Remove snapshot from pricing_groups
+    await clear_repair_cost_snapshot_from_pricing_groups(db, user_id=user_id, brand=b, model=md)
 
 
 # -----------------------------------------------------------------------------
@@ -194,7 +230,9 @@ async def _list_models_from_pricing_groups(
     """
     Returns docs like:
       {"brand": "...", "model": "...", "groups_count": N}
-    Uses a market-filtered aggregation first; if that returns 0, falls back to unfiltered.
+
+    Uses a market-filtered aggregation first; if that returns 0, falls back to
+    unfiltered (to tolerate schema drift / missing markets).
     """
     mkt = _norm_market(market)
 
@@ -205,7 +243,6 @@ async def _list_models_from_pricing_groups(
     }
 
     market_match = dict(base_match)
-    # Keep consistent with trade-in flow: markets can live in multiple places historically
     market_match["$or"] = [
         {"markets": mkt},
         {"tradein_listing.markets": mkt},
@@ -224,7 +261,6 @@ async def _list_models_from_pricing_groups(
     if out:
         return out
 
-    # Fallback if market filtering yields 0 due to schema drift / missing markets array
     return [doc async for doc in db["pricing_groups"].aggregate(pipeline(base_match))]
 
 
@@ -270,4 +306,5 @@ async def list_models_status(
         )
 
     return RepairModelsResponse(user_id=user_id, market=mkt, count=len(items), items=items)
+
 

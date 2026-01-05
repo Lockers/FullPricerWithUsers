@@ -49,6 +49,7 @@ from app.features.backmarket.sell.backbox import (
     persist_backbox_snapshot,
 )
 from app.features.backmarket.sell.sell_anchor_service import recompute_sell_anchors_for_user
+from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_user
 from app.features.backmarket.sell.sell_listings import sync_sell_listings_for_user
 from app.features.backmarket.transport.exceptions import BMClientError
 from app.features.orders.service import sync_bm_orders_for_user
@@ -146,6 +147,15 @@ async def _backbox_then_deactivate_per_listing(
 
     total = len(listings)
     every = _progress_every(total)
+    logger.info(
+        "[sell_pricing_cycle] backbox_then_deactivate START user_id=%s session_id=%s total=%d max_parallel_backbox=%d max_parallel_deactivate=%d",
+        user_id,
+        session_id,
+        total,
+        int(max_parallel_backbox),
+        int(max_parallel_deactivate),
+    )
+
 
     processed = 0
     skipped_inactive = 0
@@ -546,7 +556,34 @@ async def run_sell_pricing_cycle_for_user(
             exc,
         )
         sell_anchor_recompute_res = {"error": str(exc)}
-    # 7) Sync orders (incremental) + apply to pricing_groups
+
+    # 7) Trade pricing recompute (max_trade_price)
+    t0 = time.perf_counter()
+    try:
+        trade_pricing_recompute_res = await recompute_trade_pricing_for_user(
+            db,
+            user_id,
+            groups_filter=groups_filter,
+        )
+        timings["trade_pricing_recompute"] = time.perf_counter() - t0
+        logger.info(
+            "[sell_pricing_cycle] trade_pricing_recompute DONE user_id=%s matched=%s updated=%s failed=%s elapsed=%.3fs",
+            user_id,
+            trade_pricing_recompute_res.get("matched_groups"),
+            trade_pricing_recompute_res.get("updated"),
+            trade_pricing_recompute_res.get("failed"),
+            timings["trade_pricing_recompute"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        timings["trade_pricing_recompute"] = time.perf_counter() - t0
+        logger.exception(
+            "[sell_pricing_cycle] trade_pricing_recompute ERROR user_id=%s err=%r",
+            user_id,
+            exc,
+        )
+        trade_pricing_recompute_res = {"error": str(exc)}
+
+    # 8) Sync orders (incremental) + apply to pricing_groups
     t0 = time.perf_counter()
     try:
         orders_sync_res = await sync_bm_orders_for_user(
@@ -612,11 +649,13 @@ async def run_sell_pricing_cycle_for_user(
         "backbox_then_deactivate": backbox_res,
         "cleanup_deactivate_session": cleanup_res,
         "sell_anchor_recompute": sell_anchor_recompute_res,
+        "trade_pricing_recompute": trade_pricing_recompute_res,
         "orders_sync": orders_sync_res,
         "timings": timings,
         "started_at": started_at_dt.isoformat(),
         "finished_at": finished_at_dt.isoformat(),
     }
+
 
 
 

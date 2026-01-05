@@ -114,10 +114,7 @@ class RepairCostsRepo:
             b = doc.get("brand")
             m = doc.get("model")
             if isinstance(b, str) and b and isinstance(m, str) and m:
-                out[(b, m)] = {
-                    "updated_at": doc.get("updated_at"),
-                    "currency": doc.get("currency"),
-                }
+                out[(b, m)] = {"updated_at": doc.get("updated_at"), "currency": doc.get("currency")}
         return out
 
     async def patch_one(

@@ -17,6 +17,7 @@ from app.features.users.router import router as users_router
 from app.features.repaircost.router import router as repaircost_router
 from app.features.orders.router import router as orders_router
 from app.features.depreciation_api import router as depreciation_router
+from app.features.backmarket.pricing.routers import router as bm_pricing_router
 
 
 
@@ -31,8 +32,10 @@ init_logging(
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     async with mongo_lifespan(application):
-        yield
-    await shutdown_bm_clients()
+        try:
+            yield
+        finally:
+            await shutdown_bm_clients()
 
 
 app = FastAPI(title=config.app_name, lifespan=lifespan)
@@ -55,6 +58,8 @@ app.include_router(repaircost_router)
 app.include_router(orders_router)
 
 app.include_router(depreciation_router)
+
+app.include_router(bm_pricing_router)
 
 @app.get("/health")
 async def health():

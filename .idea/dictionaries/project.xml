@@ -6,12 +6,16 @@
       <w>ccbm</w>
       <w>datetimes</w>
       <w>deact</w>
+      <w>denom</w>
       <w>filt</w>
+      <w>inhouse</w>
       <w>likenew</w>
+      <w>nonneg</w>
       <w>orderline</w>
       <w>orderlines</w>
       <w>racey</w>
       <w>repaircost</w>
+      <w>sdef</w>
       <w>simtype</w>
       <w>testchallengepage</w>
       <w>tradein</w>

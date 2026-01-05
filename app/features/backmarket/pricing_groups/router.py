@@ -1,4 +1,3 @@
-# app/features/pricing_groups/router.py
 """
 /pricing-groups endpoints.
 
@@ -78,4 +77,85 @@ async def get_group_by_id(
     if not doc:
         raise NotFoundError(code="pricing_group_not_found", message="pricing_group not found")
     return _stringify_id(doc)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics / quick fixes (indexes)
+# ---------------------------------------------------------------------------
+
+def _to_jsonable_key_spec(key_spec: Any) -> List[List[Any]]:
+    out: List[List[Any]] = []
+    if isinstance(key_spec, list):
+        for it in key_spec:
+            if isinstance(it, (list, tuple)) and len(it) == 2:
+                out.append([it[0], int(it[1])])
+    return out
+
+
+async def _pricing_groups_index_diag(db: AsyncIOMotorDatabase) -> Dict[str, Any]:
+    col = db["pricing_groups"]
+    info = await col.index_information()
+
+    indexes: List[Dict[str, Any]] = []
+    bad_unique: List[Dict[str, Any]] = []
+
+    for name, spec in info.items():
+        key_spec = _to_jsonable_key_spec(spec.get("key"))
+        unique = bool(spec.get("unique", False))
+
+        indexes.append({"name": name, "key": key_spec, "unique": unique})
+
+        if name != "_id_" and unique:
+            fields = [k for k, _v in key_spec]
+            if "user_id" not in fields:
+                bad_unique.append({"name": name, "key": key_spec})
+
+    has_expected_unique = any(
+        (idx["unique"] is True and idx["key"] == [["user_id", 1], ["trade_sku", 1]]) for idx in indexes
+    )
+
+    return {
+        "collection": "pricing_groups",
+        "indexes": indexes,
+        "bad_unique": bad_unique,
+        "has_expected_unique_user_trade_sku": has_expected_unique,
+    }
+
+
+@router.get("/diag/indexes")
+async def pricing_groups_indexes(db: AsyncIOMotorDatabase = Depends(get_db)) -> Dict[str, Any]:
+    return await _pricing_groups_index_diag(db)
+
+
+@router.post("/diag/fix-indexes")
+async def pricing_groups_fix_indexes(db: AsyncIOMotorDatabase = Depends(get_db)) -> Dict[str, Any]:
+    col = db["pricing_groups"]
+    info = await col.index_information()
+
+    dropped: List[str] = []
+
+    for name, spec in info.items():
+        if name == "_id_":
+            continue
+        if not spec.get("unique", False):
+            continue
+
+        key_spec = spec.get("key") or []
+        fields = [k[0] for k in key_spec] if isinstance(key_spec, list) else []
+
+        if "user_id" not in fields:
+            try:
+                await col.drop_index(name)
+                dropped.append(name)
+            except Exception:
+                pass
+
+    # Ensure expected unique index exists (do not force name to avoid options conflicts)
+    try:
+        await col.create_index([("user_id", 1), ("trade_sku", 1)], unique=True)
+    except Exception:
+        pass
+
+    return {"ok": True, "dropped": dropped, "diag": await _pricing_groups_index_diag(db)}
+
 

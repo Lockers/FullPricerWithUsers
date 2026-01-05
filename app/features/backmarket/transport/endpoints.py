@@ -23,15 +23,17 @@ class EndpointConfig:
 # Tune these based on production observations.
 ENDPOINTS: dict[str, EndpointConfig] = {
     "sell_listings_get": EndpointConfig(base_rps=10, min_rps=1, max_rps=40),
-    "sell_listing_update": EndpointConfig(base_rps=4, min_rps=1, max_rps=10),
-    "sell_orders_get": EndpointConfig(base_rps=6, min_rps=1, max_rps=20),
+    "sell_listing_update": EndpointConfig(base_rps=4, min_rps=4, max_rps=9),
+    "sell_orders_get": EndpointConfig(base_rps=6, min_rps=3, max_rps=10),
+
+    # ✅ add this
+    "backbox_competitors": EndpointConfig(base_rps=4, min_rps=3, max_rps=6),
 }
 
 
-# Some endpoints treat certain 4xx statuses as a normal outcome.
-# Example: a competitor listing missing might be represented as 404.
 ENDPOINT_ALLOWED_STATUSES: dict[str, set[int]] = {
-    # "sell_competitor_lookup": {404},
+    # ✅ treat "no competitors / no entry" as a normal outcome for rate learning
+    "backbox_competitors": {404},
 }
 
 

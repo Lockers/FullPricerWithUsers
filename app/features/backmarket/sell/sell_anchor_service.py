@@ -80,6 +80,10 @@ DEFAULT_SETTINGS = SellAnchorSettings(
 
 REQUIRED_FEE_KEYS = {"bm_commission", "ccbm", "payment_processor", "shipping"}
 
+# Minimum number of "safe" child prices required before accepting auto anchor.
+MIN_VIABLE_CHILD_PRICES = 5
+
+
 
 def _fee_config_or_default(raw: Any) -> FeeConfig:
     """
@@ -263,13 +267,28 @@ def _build_sell_anchor_for_group_doc(
         if group_max_price is None or mp < group_max_price:
             group_max_price = mp
 
+    # Require enough "safe" anchors before trusting auto pricing.
+    # Spec (planning): "if > 4 price_to_win values are <= safe_ratio * max_price".
+    safe_threshold: Optional[float] = None
+    auto_viable_listings_count = 0
+    if group_max_price is not None:
+        safe_threshold = group_max_price * safe_ratio
+        for l in listings:
+            p = _extract_best_price_to_win(l)
+            if p is None:
+                continue
+            if p <= safe_threshold:
+                auto_viable_listings_count += 1
+
     reason: Optional[str] = None
     auto_viable = False
     if auto_gross is None:
         reason = "missing_gross_anchor"
     elif group_max_price is None:
         reason = "missing_max_price"
-    elif auto_gross > (group_max_price * safe_ratio):
+    elif auto_viable_listings_count < MIN_VIABLE_CHILD_PRICES:
+        reason = "insufficient_viable_prices"
+    elif safe_threshold is not None and auto_gross > safe_threshold:
         reason = "gross_above_safe_ratio"
     elif auto_net is None or auto_net <= 0:
         # Avoid silently accepting broken fee configs (net hits 0/negative)
@@ -308,6 +327,9 @@ def _build_sell_anchor_for_group_doc(
         "source_bm_listing_id": (source_listing or {}).get("bm_listing_id"),
         "source_full_sku": (source_listing or {}).get("full_sku"),
         "safe_ratio": safe_ratio,
+        "safe_gross_threshold": safe_threshold,
+        "auto_viable_listings_count": auto_viable_listings_count,
+        "auto_viable_listings_min_required": MIN_VIABLE_CHILD_PRICES,
         "max_price": group_max_price,
         "auto_viable": auto_viable,
         "reason": reason,
@@ -506,6 +528,7 @@ async def recompute_sell_anchors_for_user(
         "failed": failed,
         "elapsed_seconds": round(elapsed, 3),
     }
+
 
 
 

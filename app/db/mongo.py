@@ -1,4 +1,3 @@
-# app/db/mongo.py
 """
 MongoDB connection + FastAPI dependency.
 
@@ -12,6 +11,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import timezone
+from typing import List
 
 from fastapi import FastAPI, Request
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -42,6 +42,89 @@ async def _ensure_index(col, keys, **kwargs) -> None:
             )
             return
         raise
+
+
+async def _drop_unique_indexes_without_user_id(col, *, user_id_field: str = "user_id") -> List[str]:
+    """
+    Drop legacy UNIQUE indexes that are not scoped by user_id.
+
+    This fixes multi-user setups where older schema versions created UNIQUE indexes on fields like:
+      - trade_sku
+      - group_key
+    which prevents the same SKU/group from existing for multiple users.
+    """
+    try:
+        info = await col.index_information()
+    except Exception:
+        logger.exception("Failed to read index_information for %s", col.name)
+        return []
+
+    dropped: List[str] = []
+
+    for name, spec in info.items():
+        if name == "_id_":
+            continue
+        if not spec.get("unique", False):
+            continue
+
+        key_spec = spec.get("key") or []
+        fields = [k[0] for k in key_spec] if isinstance(key_spec, list) else []
+
+        if user_id_field not in fields:
+            try:
+                await col.drop_index(name)
+                dropped.append(name)
+                logger.warning(
+                    "Dropped legacy unique index on %s: name=%s key=%s",
+                    col.name,
+                    name,
+                    key_spec,
+                )
+            except OperationFailure:
+                logger.exception("Failed dropping index on %s: %s", col.name, name)
+
+    return dropped
+
+
+async def _ensure_index_exact(col, keys, *, unique: bool, name: str) -> None:
+    """
+    Ensure an index exists with the exact key pattern and unique option.
+
+    If an index exists with the same key pattern but wrong unique option,
+    drop it and recreate.
+    """
+    keys = list(keys)
+    try:
+        info = await col.index_information()
+    except Exception:
+        logger.exception("Failed to read index_information for %s", col.name)
+        await _ensure_index(col, keys, unique=unique, name=name)
+        return
+
+    existing_name = None
+    existing_unique = None
+
+    for n, spec in info.items():
+        if spec.get("key") == keys:
+            existing_name = n
+            existing_unique = bool(spec.get("unique", False))
+            break
+
+    if existing_name and existing_unique != bool(unique):
+        try:
+            await col.drop_index(existing_name)
+            logger.warning(
+                "Dropped index with wrong options on %s: name=%s key=%s unique=%s expected_unique=%s",
+                col.name,
+                existing_name,
+                keys,
+                existing_unique,
+                unique,
+            )
+        except OperationFailure:
+            logger.exception("Failed dropping conflicting index on %s: %s", col.name, existing_name)
+
+    await _ensure_index(col, keys, unique=unique, name=name)
 
 
 @asynccontextmanager
@@ -99,7 +182,10 @@ async def mongo_lifespan(fastapi_app: FastAPI):
         name="idx_bm_tradein_listings_user_sku",
     )
 
-    await _ensure_index(
+    # --- pricing_groups: drop legacy GLOBAL unique indexes (trade_sku, group_key, etc) ---
+    await _drop_unique_indexes_without_user_id(db["pricing_groups"], user_id_field="user_id")
+
+    await _ensure_index_exact(
         db["pricing_groups"],
         [("user_id", 1), ("trade_sku", 1)],
         unique=True,
@@ -236,6 +322,7 @@ async def mongo_lifespan(fastapi_app: FastAPI):
 
 async def get_db(request: Request) -> AsyncIOMotorDatabase:
     return request.app.state.db
+
 
 
 

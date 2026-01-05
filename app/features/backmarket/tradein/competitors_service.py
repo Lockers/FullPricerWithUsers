@@ -57,6 +57,9 @@ from app.features.backmarket.tradein.repo import (
     upsert_unavailable_tradein_competitor,
 )
 
+from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_user
+
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MARKET = "GB"
@@ -119,7 +122,7 @@ def compute_net_price(gross_price_to_win: Decimal) -> Decimal:
     """Compute a net price from a gross price.
 
     Net rule (per spec):
-      net = gross - (gross * 0.10) - 10.90
+      net = gross + (gross * 0.10) + 10.90
 
     Floored at 0.00.
     """
@@ -817,6 +820,8 @@ async def stage2_fetch_competitors_once(
     if include_results:
         out["results"] = results
 
+
+
     return out, retry_refs, terminal_refs, snaps_by_id
 
 
@@ -992,6 +997,19 @@ async def run_tradein_competitor_refresh_for_user(
         retry_wait_seconds=ws,
     )
 
+    # Recompute trade pricing once competitor snapshots are persisted (best-effort).
+    if ok_refs:
+        trade_skus = sorted({r.trade_sku for r in ok_refs if isinstance(r.trade_sku, str) and r.trade_sku})
+        if trade_skus:
+            try:
+                await recompute_trade_pricing_for_user(db, user_id, trade_skus=trade_skus)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "[tradein_competitors] trade_pricing_recompute_failed user_id=%s err=%r",
+                    user_id,
+                    exc,
+                )
+
     out: Dict[str, Any] = {
         "user_id": user_id,
         "market": mkt,
@@ -1011,5 +1029,6 @@ async def run_tradein_competitor_refresh_for_user(
         out["stage2"] = s2
 
     return out
+
 
 

@@ -126,7 +126,8 @@ def _sell_child_snapshot(doc: Dict[str, Any], parsed: ParsedSellSku) -> Dict[str
         # Best-effort fields (depend on BM payload shape)
         "currency": raw.get("currency") or doc.get("currency"),
         "price": raw.get("price") or doc.get("price"),
-        "quantity": raw.get("quantity") or doc.get("quantity"),
+        "quantity": 0,
+        "max_price": raw.get("max_price") or doc.get("max_price"),
         "publication_state": raw.get("publication_state") or raw.get("publicationState") or doc.get("publication_state"),
         "last_seen_at": doc.get("last_seen_at"),
     }

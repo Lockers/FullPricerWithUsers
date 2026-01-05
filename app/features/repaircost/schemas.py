@@ -1,5 +1,22 @@
 from __future__ import annotations
 
+"""
+Repair cost schemas.
+
+Costs are per:
+  (user_id, market, brand, model)
+
+Model here is the family string already used in pricing_groups.model
+(e.g. "16", "15 PRO MAX") and is NOT dependent on color/sim/storage.
+
+Cost categories:
+- screen_replacement
+- screen_refurb_in_house
+- screen_refurb_external
+- battery
+- housing
+"""
+
 from datetime import datetime
 from typing import Optional, Annotated
 
@@ -9,25 +26,25 @@ Money = Annotated[float, Field(ge=0.0)]
 
 
 class RepairCosts(BaseModel):
-    screen_refurb: Money
     screen_replacement: Money
+    screen_refurb_in_house: Money
+    screen_refurb_external: Money
     battery: Money
-    rear_cover: Money
-    full_housing: Money
+    housing: Money
 
 
 class RepairCostsPatch(BaseModel):
-    screen_refurb: Optional[Money] = None
     screen_replacement: Optional[Money] = None
+    screen_refurb_in_house: Optional[Money] = None
+    screen_refurb_external: Optional[Money] = None
     battery: Optional[Money] = None
-    rear_cover: Optional[Money] = None
-    full_housing: Optional[Money] = None
+    housing: Optional[Money] = None
 
 
 class RepairCostUpsert(BaseModel):
     """
-    Upsert payload for a SINGLE device family.
-    Key is (user_id from path, market, brand, model).
+    Upsert payload for a single device family.
+    Keyed by: (user_id from path, market, brand, model)
     """
     market: Annotated[str, Field(default="GB", min_length=2, max_length=4)]
     currency: Annotated[str, Field(default="GBP", min_length=3, max_length=3)]
@@ -40,7 +57,7 @@ class RepairCostUpsert(BaseModel):
 
 class RepairCostPatchRequest(BaseModel):
     """
-    PATCH payload: identify record by (market, brand, model) and patch fields.
+    PATCH payload: identify a record by (market, brand, model) then patch fields.
     """
     market: Annotated[str, Field(default="GB", min_length=2, max_length=4)]
     brand: Annotated[str, Field(min_length=1, max_length=64)]
@@ -77,4 +94,5 @@ class RepairModelsResponse(BaseModel):
     market: str
     count: int
     items: list[RepairModelStatus]
+
 

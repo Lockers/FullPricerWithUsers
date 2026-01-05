@@ -18,123 +18,79 @@ def _norm_upper(s: str) -> str:
 
 
 def _norm_model(s: str) -> str:
-    # Match the canonicalization you use in repaircost.service
     return " ".join(str(s).strip().upper().split())
 
 
-async def apply_repair_cost_to_pricing_groups(
+async def apply_repair_cost_snapshot_to_pricing_groups(
     db: AsyncIOMotorDatabase,
     *,
     user_id: str,
-    market: str,
-    brand: str,
-    model: str,
     repair_cost_doc: Dict[str, Any],
-) -> Dict[str, Any]:
+) -> None:
     """
-    Set pricing_groups.repair_costs snapshot for ALL matching pricing_groups docs.
-
-    Attempts market-filtered update first; if it matches 0 docs, falls back to
-    user+brand+model without market filtering (useful if markets field is missing).
+    Apply repair cost snapshot to ALL pricing_groups rows for (user_id, brand, model).
+    Called after upsert/patch of pricing_repair_costs.
     """
-    mkt = _norm_upper(market)
-    b = _norm_upper(brand)
-    md = _norm_model(model)
-
     now = _now_utc()
 
-    costs = (repair_cost_doc.get("costs") or {})
+    market = _norm_upper(repair_cost_doc.get("market") or "GB")
     currency = _norm_upper(repair_cost_doc.get("currency") or "GBP")
+    brand = _norm_upper(repair_cost_doc.get("brand") or "")
+    model = _norm_model(repair_cost_doc.get("model") or "")
+
+    if not brand or not model:
+        logger.warning("[repair_costs_apply] missing brand/model user_id=%s", user_id)
+        return
 
     snapshot = {
-        "market": mkt,
+        "market": market,
         "currency": currency,
-        "costs": costs,
+        "costs": (repair_cost_doc.get("costs") or {}),
         "source_updated_at": repair_cost_doc.get("updated_at"),
         "applied_at": now,
     }
 
-    update = {
-        "$set": {
-            "repair_costs": snapshot,
-            "updated_at": now,
-        }
-    }
+    res = await db["pricing_groups"].update_many(
+        {"user_id": user_id, "brand": brand, "model": model},
+        {"$set": {"repair_costs": snapshot, "updated_at": now}},
+    )
 
-    q_market = {
-        "user_id": user_id,
-        "brand": b,
-        "model": md,
-        "$or": [{"markets": mkt}, {"tradein_listing.markets": mkt}],
-    }
-
-    res = await db["pricing_groups"].update_many(q_market, update)
-
-    if int(res.matched_count or 0) == 0:
-        logger.warning(
-            "[repair_costs_apply] market-filter matched 0; falling back to unfiltered user_id=%s brand=%s model=%s market=%s",
-            user_id,
-            b,
-            md,
-            mkt,
-        )
-        q_fallback = {"user_id": user_id, "brand": b, "model": md}
-        res2 = await db["pricing_groups"].update_many(q_fallback, update)
-        return {
-            "matched": int(res2.matched_count or 0),
-            "modified": int(res2.modified_count or 0),
-            "fallback_used": True,
-        }
-
-    return {
-        "matched": int(res.matched_count or 0),
-        "modified": int(res.modified_count or 0),
-        "fallback_used": False,
-    }
+    logger.info(
+        "[repair_costs_apply] user_id=%s brand=%s model=%s matched=%s modified=%s",
+        user_id,
+        brand,
+        model,
+        int(res.matched_count or 0),
+        int(res.modified_count or 0),
+    )
 
 
-async def clear_repair_cost_from_pricing_groups(
+async def clear_repair_cost_snapshot_from_pricing_groups(
     db: AsyncIOMotorDatabase,
     *,
     user_id: str,
-    market: str,
     brand: str,
     model: str,
-) -> Dict[str, Any]:
+) -> None:
     """
-    Remove pricing_groups.repair_costs for matching docs (used on delete).
+    Remove repair_costs snapshot from pricing_groups rows for (user_id, brand, model).
+    Called after delete of pricing_repair_costs.
     """
-    mkt = _norm_upper(market)
+    now = _now_utc()
     b = _norm_upper(brand)
     md = _norm_model(model)
 
-    now = _now_utc()
+    res = await db["pricing_groups"].update_many(
+        {"user_id": user_id, "brand": b, "model": md},
+        {"$unset": {"repair_costs": ""}, "$set": {"updated_at": now}},
+    )
 
-    update = {
-        "$unset": {"repair_costs": ""},
-        "$set": {"updated_at": now},
-    }
+    logger.info(
+        "[repair_costs_clear] user_id=%s brand=%s model=%s matched=%s modified=%s",
+        user_id,
+        b,
+        md,
+        int(res.matched_count or 0),
+        int(res.modified_count or 0),
+    )
 
-    q_market = {
-        "user_id": user_id,
-        "brand": b,
-        "model": md,
-        "$or": [{"markets": mkt}, {"tradein_listing.markets": mkt}],
-    }
-
-    res = await db["pricing_groups"].update_many(q_market, update)
-
-    if int(res.matched_count or 0) == 0:
-        q_fallback = {"user_id": user_id, "brand": b, "model": md}
-        res2 = await db["pricing_groups"].update_many(q_fallback, update)
-        return {
-            "matched": int(res2.matched_count or 0),
-            "modified": int(res2.modified_count or 0),
-            "fallback_used": True,
-        }
-
-    return {
-        "matched": int(res.matched_count or 0),
-        "modified": int(res.modified_count or 0),
-        "fallback_used": False,
-    }

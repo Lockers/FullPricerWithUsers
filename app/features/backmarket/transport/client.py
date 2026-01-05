@@ -26,10 +26,12 @@ import asyncio
 import logging
 import os
 import re
+import ssl
 import time
 import uuid
 from typing import Any, Dict, Optional
 
+import anyio
 import httpx
 
 from app.features.backmarket.rate.circuit_breaker import CircuitBreaker
@@ -108,10 +110,10 @@ class BackMarketClient:
         # Per-endpoint circuit breakers.
         self._breakers: Dict[str, CircuitBreaker] = {}
 
-        client_kwargs: Dict[str, Any] = {
-            "base_url": self._base_url,
-            "timeout": self._timeout_seconds,
-        }
+        client_kwargs: Dict[str, Any] = {"base_url": self._base_url, "timeout": self._timeout_seconds,
+                                         "limits": httpx.Limits(max_keepalive_connections=0)}
+
+        # Disable keepalive connections (helps with rotating proxies).
 
         if proxy_url:
             # httpx has changed proxy kwargs across versions.
@@ -168,11 +170,42 @@ class BackMarketClient:
         # Ensure the endpoint exists (also prevents typos silently using defaults).
         endpoint_config(endpoint_key)
 
-        state, limiter = await self._rates.prepare(endpoint_key)
-        breaker = self._breaker_for(endpoint_key)
-
         attempts_total = max(1, int(max_attempts or self._max_attempts))
         req_id = uuid.uuid4().hex
+
+        # ✅ Guard: rate controller prepare must never hang forever
+        try:
+            state, limiter = await asyncio.wait_for(
+                self._rates.prepare(endpoint_key),
+                timeout=15.0,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "[bm_request] RATE_PREPARE_TIMEOUT req_id=%s user_id=%s endpoint=%s method=%s path=%s timeout=15s",
+                req_id,
+                self.user_id,
+                endpoint_key,
+                method,
+                path,
+            )
+            raise BMMaxRetriesError(
+                f"Back Market request aborted: rate.prepare timeout (endpoint={endpoint_key})"
+            ) from exc
+
+        async def _safe_persist(where: str) -> None:
+            try:
+                await self._rates.persist(state)
+            except Exception as persist_exc:
+                logger.warning(
+                    "[bm_request] RATE_PERSIST_FAILED req_id=%s user_id=%s endpoint=%s where=%s err=%r",
+                    req_id,
+                    self.user_id,
+                    endpoint_key,
+                    where,
+                    persist_exc,
+                )
+
+        breaker = self._breaker_for(endpoint_key)
 
         http_attempt = 0
         last_exc: Optional[Exception] = None
@@ -180,7 +213,25 @@ class BackMarketClient:
         while http_attempt < attempts_total:
             # Circuit breaker gate: if open, sleep and retry *without consuming an HTTP attempt*.
             try:
-                await breaker.before_call()
+                await asyncio.wait_for(breaker.before_call(), timeout=10.0)
+            except asyncio.TimeoutError as exc:
+                last_exc = exc
+                wait_s = backoff_seconds(max(1, http_attempt + 1))
+                logger.error(
+                    "[bm_request] BREAKER_BEFORE_CALL_TIMEOUT req_id=%s user_id=%s endpoint=%s method=%s path=%s "
+                    "attempt=%d/%d wait=%.3fs",
+                    req_id,
+                    self.user_id,
+                    endpoint_key,
+                    method,
+                    path,
+                    http_attempt + 1,
+                    attempts_total,
+                    wait_s,
+                )
+                await asyncio.sleep(wait_s)
+                continue
+
             except BMRateLimited as exc:
                 wait_s = _breaker_wait_seconds(exc)
                 if wait_s is None:
@@ -204,7 +255,22 @@ class BackMarketClient:
                 continue
 
             # Rate limiter gate.
-            limiter_wait = await limiter.acquire()
+            try:
+                limiter_wait = await asyncio.wait_for(limiter.acquire(), timeout=60.0)
+            except asyncio.TimeoutError:
+                # ✅ Avoid silent freeze if limiter is wedged or rps is effectively 0.
+                logger.error(
+                    "[bm_request] LIMITER_ACQUIRE_TIMEOUT req_id=%s user_id=%s endpoint=%s method=%s path=%s "
+                    "attempt=%d/%d -> bypassing limiter",
+                    req_id,
+                    self.user_id,
+                    endpoint_key,
+                    method,
+                    path,
+                    http_attempt + 1,
+                    attempts_total,
+                )
+                limiter_wait = 0.0
 
             http_attempt += 1
 
@@ -226,7 +292,7 @@ class BackMarketClient:
                     headers=headers,
                     timeout=timeout,
                 )
-            except httpx.TransportError as exc:
+            except (httpx.TransportError, ssl.SSLError, anyio.ClosedResourceError) as exc:
                 # No response. Treat as retryable.
                 last_exc = exc
 
@@ -235,7 +301,7 @@ class BackMarketClient:
                 # Track as server_error with status_code 0.
                 async with self._rates.endpoint_lock(endpoint_key):
                     self._rates.on_server_error(state, 0)
-                    await self._rates.persist(state)
+                    await _safe_persist("transport_error")
 
                 wait_s = backoff_seconds(http_attempt)
                 logger.warning(
@@ -269,7 +335,7 @@ class BackMarketClient:
             if is_success:
                 async with self._rates.endpoint_lock(endpoint_key):
                     self._rates.on_success(state, status)
-                    await self._rates.persist(state)
+                    await _safe_persist("success")
 
                 await breaker.after_success()
 
@@ -296,7 +362,7 @@ class BackMarketClient:
             if status == 429 or is_cloudflare_503(resp):
                 async with self._rates.endpoint_lock(endpoint_key):
                     self._rates.on_rate_limited(state, status)
-                    await self._rates.persist(state)
+                    await _safe_persist("rate_limited")
 
                 # Do NOT count rate limiting as a circuit breaker failure.
                 await breaker.after_success()
@@ -333,7 +399,7 @@ class BackMarketClient:
             if 500 <= status < 600:
                 async with self._rates.endpoint_lock(endpoint_key):
                     self._rates.on_server_error(state, status)
-                    await self._rates.persist(state)
+                    await _safe_persist("server_error")
 
                 await breaker.after_failure()
 
@@ -367,7 +433,7 @@ class BackMarketClient:
             # Client error: usually not retryable. Track it, but don't open the breaker.
             async with self._rates.endpoint_lock(endpoint_key):
                 self._rates.on_client_error(state, status)
-                await self._rates.persist(state)
+                await _safe_persist("client_error")
 
             await breaker.after_success()
 

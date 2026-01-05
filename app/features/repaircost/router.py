@@ -75,11 +75,6 @@ async def delete_repair_cost_endpoint(
     return {"ok": True}
 
 
-# ---------------------------------------------------------------------------
-# Helper endpoint: show all distinct (brand, model) in pricing_groups and whether
-# a repair cost exists for each.
-# ---------------------------------------------------------------------------
-
 @router.get("/{user_id}/models", response_model=RepairModelsResponse)
 async def list_models_status_endpoint(
     user_id: str,
@@ -88,4 +83,5 @@ async def list_models_status_endpoint(
     limit: int = Query(5000, ge=1, le=20000),
 ):
     return await list_models_status(db, user_id, market=market, limit=limit)
+
 

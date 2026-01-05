@@ -4,17 +4,30 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="First commit">
+    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="second commit">
       <change afterPath="$PROJECT_DIR$/.env" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/pricing_overrides_schemas.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/routers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_repo.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app/features/backmarket/transport/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/dictionaries/project.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/dictionaries/project.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/db/mongo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/db/mongo.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/users/schemas.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/schemas.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/users/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/users/settings_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/settings_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/repaircost/pricing_groups_sync.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/pricing_groups_sync.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/repaircost/repo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/repo.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/repaircost/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/repaircost/schemas.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/schemas.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/repaircost/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -87,7 +100,9 @@
       <workItem from="1766570061079" duration="30391000" />
       <workItem from="1766695150693" duration="33046000" />
       <workItem from="1766866098108" duration="64603000" />
-      <workItem from="1767270552372" duration="6150000" />
+      <workItem from="1767270552372" duration="42538000" />
+      <workItem from="1767604015713" duration="402000" />
+      <workItem from="1767604444920" duration="8510000" />
     </task>
     <task id="LOCAL-00001" summary="First commit">
       <option name="closed" value="true" />
@@ -97,7 +112,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767137741271</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="second commit">
+      <option name="closed" value="true" />
+      <created>1767286074570</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1767286074570</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -116,6 +139,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="First commit" />
-    <option name="LAST_COMMIT_MESSAGE" value="First commit" />
+    <MESSAGE value="second commit" />
+    <option name="LAST_COMMIT_MESSAGE" value="second commit" />
   </component>
 </project>
