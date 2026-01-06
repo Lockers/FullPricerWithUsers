@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.errors import NotFoundError
+from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_user
 from app.features.repaircost.pricing_groups_sync import (
     apply_repair_cost_snapshot_to_pricing_groups,
     clear_repair_cost_snapshot_from_pricing_groups,
@@ -114,6 +115,7 @@ async def upsert_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: Re
 
     # Push snapshot into pricing_groups immediately (per user, per model family)
     await apply_repair_cost_snapshot_to_pricing_groups(db, user_id=user_id, repair_cost_doc=doc)
+    await recompute_trade_pricing_for_user(db, user_id, groups_filter={"brand": brand, "model": model})
 
     return RepairCostRead(**_normalize_doc_for_read(doc))
 
@@ -185,6 +187,7 @@ async def patch_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: Rep
 
     # Push snapshot into pricing_groups immediately
     await apply_repair_cost_snapshot_to_pricing_groups(db, user_id=user_id, repair_cost_doc=doc)
+    await recompute_trade_pricing_for_user(db, user_id, groups_filter={"brand": b, "model": md})
 
     return RepairCostRead(**_normalize_doc_for_read(doc))
 
@@ -213,6 +216,7 @@ async def delete_repair_cost(
 
     # Remove snapshot from pricing_groups
     await clear_repair_cost_snapshot_from_pricing_groups(db, user_id=user_id, brand=b, model=md)
+    await recompute_trade_pricing_for_user(db, user_id, groups_filter={"brand": b, "model": md})
 
 
 # -----------------------------------------------------------------------------
@@ -306,5 +310,6 @@ async def list_models_status(
         )
 
     return RepairModelsResponse(user_id=user_id, market=mkt, count=len(items), items=items)
+
 
 

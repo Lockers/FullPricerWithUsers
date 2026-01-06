@@ -5,23 +5,17 @@ Trade pricing calculations (max allowable buy price).
 
 This module computes and persists trade-in pricing guidance onto each pricing_groups doc.
 
-It uses:
-- Sell anchor net price (sell_anchor.net_used preferred; falls back to sell_anchor.lowest_net_sell_price)
+Core inputs:
+- Net sell anchor per condition (sell_anchor.net_used preferred; else sell_anchor.lowest_net_sell_price)
 - Repair costs (pricing_groups.repair_costs.costs)
-- Required profit (per pricing_group override; falls back to user default; falls back to £75)
-- Margin VAT (user default; falls back to 0.1667)
+- Required profit (per pricing_group override; else user default; else £75)
+- VAT rate (user default; else 0.1667)
 
-Outputs are persisted under:
-  pricing_groups.trade_pricing
-
-Strict vs estimated
--------------------
-If a scenario is missing one or more required repair costs, it will:
-- mark the scenario invalid (`valid=False`)
-- still compute an *estimated* max price by treating missing costs as 0.00
-
-This matches your "price but guardrail" requirement without accidentally treating
-unknown repair costs as known.
+Key behavior:
+- Scenarios like GOOD->EXCELLENT or FAIR->EXCELLENT MUST use the EXCELLENT sell anchor
+  (not the group's own sell anchor if the group itself is GOOD/FAIR).
+- Battery is assumed to be changed on every device. If no repair profile exists yet,
+  battery defaults to £15 so we can still compute baseline scenarios.
 """
 
 import asyncio
@@ -52,6 +46,9 @@ USER_SETTINGS_COL = "user_settings"
 
 DEFAULT_REQUIRED_PROFIT_GBP = 75.0
 DEFAULT_VAT_RATE = 0.1667
+
+# If no repair profile exists yet, battery defaults to this so the base scenario can still compute.
+DEFAULT_BATTERY_COST_GBP = 15.0
 
 # Trade-in landed cost model (GB)
 # NOTE: This mirrors the competitor flow implementation:
@@ -164,9 +161,22 @@ def _extract_competitor_gross_price_to_win(group: Dict[str, Any]) -> Optional[fl
 
 REPAIR_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
     "battery": ("battery", "battery_new"),
-    "housing": ("housing", "housing_new"),
-    "screen_refurb_in_house": ("screen_refurb_in_house", "screen_refurb_internal", "screen_refurb_inhouse"),
-    "screen_refurb_external": ("screen_refurb_external", "screen_refurb_outsource", "screen_refurb_outsourced"),
+    # "full_housing" exists in older docs; treat it as equivalent to "housing".
+    "housing": ("housing", "housing_new", "full_housing", "housing_full"),
+    # Some older repair profiles only store a single "screen_refurb" cost. When present,
+    # use it for both in-house and external refurb scenarios.
+    "screen_refurb_in_house": (
+        "screen_refurb_in_house",
+        "screen_refurb_internal",
+        "screen_refurb_inhouse",
+        "screen_refurb",
+    ),
+    "screen_refurb_external": (
+        "screen_refurb_external",
+        "screen_refurb_outsource",
+        "screen_refurb_outsourced",
+        "screen_refurb",
+    ),
     "screen_replacement_in_house": (
         "screen_replacement_in_house",
         "screen_replacement",
@@ -176,18 +186,111 @@ REPAIR_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
 }
 
 
+def _normalize_storage_gb(v: Any) -> Optional[str]:
+    if v is None or _is_bool(v):
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            i = int(v)
+        except (TypeError, ValueError):
+            return None
+        return str(i)
+    if isinstance(v, str) and v.strip():
+        s = v.strip()
+        # Keep numeric strings clean ("128" not "128.0").
+        try:
+            i = int(float(s))
+            return str(i)
+        except (TypeError, ValueError):
+            return s
+    return None
+
+
+def _extract_device_key(group: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """Return a stable identity key for a pricing group: (brand, model, storage_gb).
+
+    We prefer explicit fields, but fall back to parsing group_key if needed.
+    """
+    brand = group.get("brand")
+    model = group.get("model")
+    storage_gb = group.get("storage_gb")
+
+    if isinstance(brand, str) and isinstance(model, str):
+        storage_norm = _normalize_storage_gb(storage_gb)
+        if storage_norm:
+            return (brand.strip().upper(), model.strip().upper(), storage_norm)
+
+    # Fallback: group_key is typically "BRAND|MODEL|STORAGE|TRADEIN_GRADE".
+    gk = group.get("group_key")
+    if isinstance(gk, str) and gk.strip() and "|" in gk:
+        parts = [p.strip() for p in gk.split("|")]
+        if len(parts) >= 3 and parts[0] and parts[1] and parts[2]:
+            return (parts[0].upper(), parts[1].upper(), parts[2])
+
+    return None
+
+
+def _extract_group_condition(group: Dict[str, Any]) -> Optional[str]:
+    """Return the condition this group represents (used for sell-anchor lookup)."""
+    for key in ("target_sell_condition", "trade_sku_condition", "sell_condition"):
+        v = group.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip().upper()
+    return _infer_condition_from_trade_sku(group.get("trade_sku"))
+
+
+async def _build_sell_anchor_index_for_user(
+    db: AsyncIOMotorDatabase,
+    *,
+    user_id: str,
+) -> Dict[Tuple[str, str, str], Dict[str, float]]:
+    """Build {device_key -> {condition -> net_sell_anchor}} for a user.
+
+    Used so trade pricing scenarios like FAIR->EXCELLENT can use the EXCELLENT sell anchor.
+    """
+    projection = {
+        "brand": 1,
+        "model": 1,
+        "storage_gb": 1,
+        "group_key": 1,
+        "trade_sku": 1,
+        "trade_sku_condition": 1,
+        "target_sell_condition": 1,
+        "sell_condition": 1,
+        "sell_anchor": 1,
+    }
+
+    out: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+    cur = db[PRICING_GROUPS_COL].find({"user_id": user_id}, projection=projection)
+    async for doc in cur:
+        dev = _extract_device_key(doc)
+        if dev is None:
+            continue
+        cond = _extract_group_condition(doc)
+        if not cond:
+            continue
+        net = _extract_net_sell_anchor(doc)
+        if net is None:
+            continue
+        out.setdefault(dev, {})[cond] = float(net)
+    return out
+
+
 def _extract_repair_costs(group: Dict[str, Any]) -> Dict[str, Optional[float]]:
     raw_costs = _get_nested(group, "repair_costs.costs", default={})
     costs: Dict[str, Optional[float]] = {k: None for k in REPAIR_KEY_ALIASES}
 
-    if not isinstance(raw_costs, dict):
-        return costs
+    if isinstance(raw_costs, dict):
+        for canonical, aliases in REPAIR_KEY_ALIASES.items():
+            for key in aliases:
+                if key in raw_costs:
+                    costs[canonical] = _to_pos_float(raw_costs.get(key))
+                    break
 
-    for canonical, aliases in REPAIR_KEY_ALIASES.items():
-        for key in aliases:
-            if key in raw_costs:
-                costs[canonical] = _to_pos_float(raw_costs.get(key))
-                break
+    # Battery is always assumed (and is never "zero" per your spec).
+    # If no repair profile exists yet, default it so trade pricing still works.
+    if costs.get("battery") is None:
+        costs["battery"] = float(DEFAULT_BATTERY_COST_GBP)
 
     return costs
 
@@ -226,7 +329,6 @@ def _target_sell_conditions_for_buy_condition(buy_condition: str) -> Tuple[str, 
     return (buy,)
 
 
-
 def _build_scenarios_for_route(buy_condition: str, sell_condition: str) -> List[TradePricingScenario]:
     buy = str(buy_condition or "").upper().strip()
     sell = str(sell_condition or "").upper().strip()
@@ -251,7 +353,6 @@ def _build_scenarios_for_route(buy_condition: str, sell_condition: str) -> List[
             ),
         ]
 
-    # UPDATED: include FAIR and add the full "new screen replacement" path.
     # Spec: GOOD->EXCELLENT and FAIR->EXCELLENT are screen refurb (in-house/external)
     # + new housing + new battery.
     if buy in {"USED", "GOOD", "FAIR"} and sell == "EXCELLENT":
@@ -269,7 +370,7 @@ def _build_scenarios_for_route(buy_condition: str, sell_condition: str) -> List[
             ),
         ]
 
-    # Default: battery always required (per your spec)
+    # Default: battery always required
     if buy and sell and buy == sell:
         return [TradePricingScenario(key="same_condition_new_battery", route=route, repair_cost_keys=("battery",))]
 
@@ -283,7 +384,7 @@ def _compute_max_buy_net(
     repair_total: float,
     vat_rate: float,
 ) -> Optional[float]:
-    # profit = (net_sell - net_buy) * (1 - vat_rate) - repair_total
+    # profit_after_vat = (net_sell - net_buy) * (1 - vat_rate) - repair_total
     one_minus_vat = 1.0 - float(vat_rate)
     if one_minus_vat <= 0:
         return None
@@ -308,7 +409,6 @@ def _compute_profit_at_buy_net(
 
 
 def _default_trade_pricing_settings() -> TradePricingSettings:
-    # Explicit defaults to keep type checkers happy (and to avoid relying on Pydantic Field defaults).
     return TradePricingSettings(
         default_required_profit=DEFAULT_REQUIRED_PROFIT_GBP,
         default_required_margin=None,
@@ -350,7 +450,6 @@ async def update_trade_pricing_settings_for_user(
 ) -> Dict[str, Any]:
     now = _now_utc()
 
-    # Validate + normalize before persisting.
     try:
         settings = TradePricingSettings.model_validate(payload.model_dump())
     except ValidationError as exc:
@@ -389,7 +488,6 @@ async def update_trade_pricing_settings_for_group(
     now = _now_utc()
 
     set_doc: Dict[str, Any] = {"trade_pricing.settings_updated_at": now}
-
     patch = payload.model_dump(exclude_unset=True)
 
     if "required_profit" in patch:
@@ -451,6 +549,7 @@ def _compute_trade_pricing_for_group_doc(
     group: Dict[str, Any],
     *,
     user_settings: Dict[str, Any],
+    sell_anchor_index: Optional[Dict[Tuple[str, str, str], Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
     computed_at = _now_utc()
 
@@ -460,13 +559,17 @@ def _compute_trade_pricing_for_group_doc(
         or _infer_condition_from_trade_sku(trade_sku)
         or "UNKNOWN"
     )
-    sell_condition = (
+
+    group_sell_condition = (
         (str(group.get("target_sell_condition")).upper().strip() if isinstance(group.get("target_sell_condition"), str) else None)
         or (str(group.get("sell_condition")).upper().strip() if isinstance(group.get("sell_condition"), str) else None)
         or "UNKNOWN"
     )
 
-    net_sell = _extract_net_sell_anchor(group)
+    device_key = _extract_device_key(group)
+
+    # Group-level sell anchor (used when scenario sell condition matches this group)
+    group_net_sell = _extract_net_sell_anchor(group)
     currency = _extract_currency(group)
 
     competitor_net = _extract_competitor_net_price_to_win(group)
@@ -482,89 +585,93 @@ def _compute_trade_pricing_for_group_doc(
     )
 
     repair_costs = _extract_repair_costs(group)
+
     # Build scenarios for ALL required sell-condition targets for this buy condition.
-    # This ensures a GOOD entry persists both GOOD->GOOD and GOOD->EXCELLENT under computed.scenarios.
     scenarios: List[TradePricingScenario] = []
     for target_sell_condition in _target_sell_conditions_for_buy_condition(buy_condition):
         scenarios.extend(_build_scenarios_for_route(buy_condition, target_sell_condition))
 
     scenario_docs: List[Dict[str, Any]] = []
     any_missing_cost_keys: set[str] = set()
+    missing_sell_anchor_conditions: set[str] = set()
 
     best_strict: Optional[Dict[str, Any]] = None
-    best_estimated: Optional[Dict[str, Any]] = None
 
     for sc in scenarios:
+        # Scenario sell anchor MUST match the scenario sell condition.
+        sc_sell_condition = group_sell_condition
+        if isinstance(sc.route, str) and "->" in sc.route:
+            try:
+                sc_sell_condition = sc.route.split("->", 1)[1].strip().upper() or group_sell_condition
+            except Exception:
+                sc_sell_condition = group_sell_condition
+
+        # Resolve the sell anchor for THIS scenario sell condition.
+        net_sell: Optional[float] = None
+        if sc_sell_condition == group_sell_condition:
+            net_sell = group_net_sell
+        elif device_key is not None and sell_anchor_index is not None:
+            net_sell = _to_pos_float((sell_anchor_index.get(device_key) or {}).get(sc_sell_condition))
+
+        if net_sell is None:
+            missing_sell_anchor_conditions.add(sc_sell_condition)
+
+        # Resolve repair total for this scenario.
         cost_parts: Dict[str, Optional[float]] = {k: repair_costs.get(k) for k in sc.repair_cost_keys}
         missing_cost_keys = [k for k, v in cost_parts.items() if v is None]
         any_missing_cost_keys.update(missing_cost_keys)
 
-        repair_total_assuming_zero = sum(float(v or 0.0) for v in cost_parts.values())
-
         strict_valid_inputs = bool(net_sell is not None and not missing_cost_keys)
 
-        max_buy_net_strict: Optional[float] = None
-        max_buy_gross_strict: Optional[float] = None
-        max_buy_net_estimated: Optional[float] = None
-        max_buy_gross_estimated: Optional[float] = None
+        max_buy_net: Optional[float] = None
+        max_buy_gross: Optional[float] = None
 
         profit_at_competitor: Optional[float] = None
         margin_at_competitor: Optional[float] = None
         vat_at_competitor: Optional[float] = None
 
+        repair_total: Optional[float] = None
+
         if strict_valid_inputs and net_sell is not None:
-            repair_total_strict = sum(float(v or 0.0) for v in cost_parts.values())
-            max_buy_net_strict = _compute_max_buy_net(
+            repair_total = sum(float(v) for v in cost_parts.values() if v is not None)
+
+            max_buy_net = _compute_max_buy_net(
                 net_sell=net_sell,
                 required_profit=required_profit,
-                repair_total=repair_total_strict,
+                repair_total=repair_total,
                 vat_rate=vat_rate,
             )
-            if max_buy_net_strict is not None and currency == "GBP":
-                max_buy_gross_strict = _net_to_gross_tradein_gbp(max_buy_net_strict)
+            if max_buy_net is not None and currency == "GBP":
+                max_buy_gross = _net_to_gross_tradein_gbp(max_buy_net)
 
-        if net_sell is not None:
-            max_buy_net_estimated = _compute_max_buy_net(
-                net_sell=net_sell,
-                required_profit=required_profit,
-                repair_total=repair_total_assuming_zero,
-                vat_rate=vat_rate,
-            )
-            if max_buy_net_estimated is not None and currency == "GBP":
-                max_buy_gross_estimated = _net_to_gross_tradein_gbp(max_buy_net_estimated)
+            if competitor_net is not None:
+                vat_at_competitor = _round2((float(net_sell) - float(competitor_net)) * float(vat_rate))
+                profit_at_competitor = _compute_profit_at_buy_net(
+                    net_sell=net_sell,
+                    net_buy=competitor_net,
+                    repair_total=repair_total,
+                    vat_rate=vat_rate,
+                )
+                if net_sell > 0:
+                    margin_at_competitor = _round2(float(profit_at_competitor) / float(net_sell))
 
-        if net_sell is not None and competitor_net is not None:
-            vat_at_competitor = _round2((float(net_sell) - float(competitor_net)) * float(vat_rate))
-            profit_at_competitor = _compute_profit_at_buy_net(
-                net_sell=net_sell,
-                net_buy=competitor_net,
-                repair_total=repair_total_assuming_zero,
-                vat_rate=vat_rate,
-            )
-            if net_sell > 0:
-                margin_at_competitor = _round2(float(profit_at_competitor) / float(net_sell))
-
-        scenario_valid = bool(strict_valid_inputs and max_buy_net_strict is not None)
+        scenario_valid = bool(strict_valid_inputs and max_buy_net is not None)
 
         scenario_doc = {
             "key": sc.key,
             "route": sc.route,
             "repair_cost_keys": list(sc.repair_cost_keys),
-            "repair_cost_parts": cost_parts,
             "missing_cost_keys": missing_cost_keys,
-            "repair_cost_total": (None if missing_cost_keys else _round2(repair_total_assuming_zero)),
-            "repair_cost_total_assuming_zero": _round2(repair_total_assuming_zero),
+            "repair_cost_total": _round2(repair_total) if repair_total is not None else None,
             "required_profit": _round2(required_profit),
             "vat_rate": float(vat_rate),
             "net_sell_anchor": _round2(net_sell) if net_sell is not None else None,
-            "max_trade_price_net": max_buy_net_strict,
-            "max_trade_price_gross": max_buy_gross_strict,
-            "max_trade_price_net_assuming_zero": max_buy_net_estimated,
-            "max_trade_price_gross_assuming_zero": max_buy_gross_estimated,
+            "max_trade_price_net": max_buy_net,
+            "max_trade_price_gross": max_buy_gross,
             "competitor_net_price_to_win": _round2(competitor_net) if competitor_net is not None else None,
             "competitor_gross_price_to_win": _round2(competitor_gross) if competitor_gross is not None else None,
-            "profit_at_competitor_assuming_zero": profit_at_competitor,
-            "margin_at_competitor_assuming_zero": margin_at_competitor,
+            "profit_at_competitor": profit_at_competitor,
+            "margin_at_competitor": margin_at_competitor,
             "vat_at_competitor": vat_at_competitor,
             "valid": scenario_valid,
             "computed_at": computed_at,
@@ -572,27 +679,16 @@ def _compute_trade_pricing_for_group_doc(
 
         scenario_docs.append(scenario_doc)
 
-        if scenario_valid and max_buy_net_strict is not None:
+        if scenario_valid and max_buy_net is not None:
             if best_strict is None:
                 best_strict = scenario_doc
             else:
                 prev = best_strict.get("max_trade_price_net")
-                if prev is None or float(max_buy_net_strict) > float(prev):
+                if prev is None or float(max_buy_net) > float(prev):
                     best_strict = scenario_doc
-
-        if max_buy_net_estimated is not None:
-            if best_estimated is None:
-                best_estimated = scenario_doc
-            else:
-                prev_est = best_estimated.get("max_trade_price_net_assuming_zero")
-                if prev_est is None or float(max_buy_net_estimated) > float(prev_est):
-                    best_estimated = scenario_doc
 
     max_trade_price_net = best_strict.get("max_trade_price_net") if best_strict else None
     max_trade_price_gross = best_strict.get("max_trade_price_gross") if best_strict else None
-
-    max_trade_price_net_est = best_estimated.get("max_trade_price_net_assuming_zero") if best_estimated else None
-    max_trade_price_gross_est = best_estimated.get("max_trade_price_gross_assuming_zero") if best_estimated else None
 
     competitor_within_strict: Optional[bool] = None
     delta_to_competitor: Optional[float] = None
@@ -600,8 +696,18 @@ def _compute_trade_pricing_for_group_doc(
         competitor_within_strict = bool(float(competitor_net) <= float(max_trade_price_net))
         delta_to_competitor = _round2(float(max_trade_price_net) - float(competitor_net))
 
+    best_route = (best_strict.get("route") if best_strict else None) or f"{buy_condition}->{group_sell_condition}"
+    best_sell_condition = (
+        best_route.split("->", 1)[1].strip().upper()
+        if isinstance(best_route, str) and "->" in best_route
+        else group_sell_condition
+    )
+
     guardrails = {
-        "missing_net_sell_anchor": bool(net_sell is None),
+        # Backwards-compatible: this flag only reflects the group-level sell anchor.
+        "missing_net_sell_anchor": bool(group_net_sell is None),
+        # New: scenarios like FAIR->EXCELLENT might be missing the EXCELLENT anchor.
+        "missing_sell_anchor_conditions": sorted(missing_sell_anchor_conditions),
         "missing_repair_costs": bool(any_missing_cost_keys),
         "missing_cost_keys": sorted(any_missing_cost_keys),
         "competitor_missing": bool(_get_nested(group, "tradein_listing.competitor.missing", default=False)),
@@ -613,8 +719,8 @@ def _compute_trade_pricing_for_group_doc(
         "trade_sku": trade_sku,
         "group_id": str(group.get("_id")) if group.get("_id") else None,
         "buy_condition": buy_condition,
-        "sell_condition": sell_condition,
-        "route": f"{buy_condition}->{sell_condition}",
+        "sell_condition": best_sell_condition,
+        "route": best_route,
         "currency": currency,
         "requirements": {
             "required_profit": _round2(required_profit),
@@ -624,7 +730,12 @@ def _compute_trade_pricing_for_group_doc(
             "vat_rate": float(vat_rate),
         },
         "inputs": {
-            "net_sell_anchor": _round2(net_sell) if net_sell is not None else None,
+            # Show the net sell anchor used by the *best* scenario (falls back to group anchor).
+            "net_sell_anchor": (
+                best_strict.get("net_sell_anchor")
+                if isinstance(best_strict, dict) and best_strict.get("net_sell_anchor") is not None
+                else (_round2(group_net_sell) if group_net_sell is not None else None)
+            ),
             "competitor_net_price_to_win": _round2(competitor_net) if competitor_net is not None else None,
             "competitor_gross_price_to_win": _round2(competitor_gross) if competitor_gross is not None else None,
             "repair_costs": repair_costs,
@@ -633,9 +744,6 @@ def _compute_trade_pricing_for_group_doc(
         "best_scenario_key": best_strict.get("key") if best_strict else None,
         "max_trade_price_net": max_trade_price_net,
         "max_trade_price_gross": max_trade_price_gross,
-        "best_scenario_key_assuming_zero": best_estimated.get("key") if best_estimated else None,
-        "max_trade_price_net_assuming_zero": max_trade_price_net_est,
-        "max_trade_price_gross_assuming_zero": max_trade_price_gross_est,
         "competitor_within_strict": competitor_within_strict,
         "delta_to_competitor_net": delta_to_competitor,
         "guardrails": guardrails,
@@ -658,9 +766,6 @@ async def _persist_trade_pricing_computed(
                 "trade_pricing.best_scenario_key": computed.get("best_scenario_key"),
                 "trade_pricing.max_trade_price_net": computed.get("max_trade_price_net"),
                 "trade_pricing.max_trade_price_gross": computed.get("max_trade_price_gross"),
-                "trade_pricing.best_scenario_key_assuming_zero": computed.get("best_scenario_key_assuming_zero"),
-                "trade_pricing.max_trade_price_net_assuming_zero": computed.get("max_trade_price_net_assuming_zero"),
-                "trade_pricing.max_trade_price_gross_assuming_zero": computed.get("max_trade_price_gross_assuming_zero"),
                 "trade_pricing.updated_at": now,
                 "updated_at": now,
             }
@@ -680,7 +785,16 @@ async def recompute_trade_pricing_for_group(
         raise BMClientError(f"pricing_group not found: {group_id}")
 
     user_settings = await get_trade_pricing_settings_for_user(db, user_id)
-    computed = _compute_trade_pricing_for_group_doc(group, user_settings=user_settings)
+
+    # Build a sell-anchor index so cross-condition scenarios (e.g. FAIR->EXCELLENT)
+    # use the correct net sell anchor for the target sell condition.
+    sell_anchor_index = await _build_sell_anchor_index_for_user(db, user_id=user_id)
+
+    computed = _compute_trade_pricing_for_group_doc(
+        group,
+        user_settings=user_settings,
+        sell_anchor_index=sell_anchor_index,
+    )
 
     await _persist_trade_pricing_computed(db, user_id=user_id, group_object_id=gid, computed=computed)
 
@@ -702,9 +816,12 @@ async def recompute_trade_pricing_for_user(
     include_item_results: bool = False,
 ) -> Dict[str, Any]:
     """Recompute and persist trade_pricing for all matching pricing_groups."""
-
     t0 = time.perf_counter()
     user_settings = await get_trade_pricing_settings_for_user(db, user_id)
+
+    # Pre-compute sell anchors for all groups so scenarios can look up anchors
+    # for other conditions without extra round-trips per group.
+    sell_anchor_index = await _build_sell_anchor_index_for_user(db, user_id=user_id)
 
     q: Dict[str, Any] = {"user_id": user_id}
     if groups_filter:
@@ -715,8 +832,15 @@ async def recompute_trade_pricing_for_user(
         if sku_list:
             q["trade_sku"] = {"$in": sku_list}
 
+    # IMPORTANT: include identity fields so cross-condition sell anchor lookup works
+    # when computing scenarios (GOOD->EXCELLENT etc).
     projection = {
         "_id": 1,
+        "user_id": 1,
+        "brand": 1,
+        "model": 1,
+        "storage_gb": 1,
+        "group_key": 1,
         "trade_sku": 1,
         "trade_sku_condition": 1,
         "target_sell_condition": 1,
@@ -751,7 +875,11 @@ async def recompute_trade_pricing_for_user(
 
         try:
             async with sem:
-                computed = _compute_trade_pricing_for_group_doc(group_doc, user_settings=user_settings)
+                computed = _compute_trade_pricing_for_group_doc(
+                    group_doc,
+                    user_settings=user_settings,
+                    sell_anchor_index=sell_anchor_index,
+                )
                 await _persist_trade_pricing_computed(db, user_id=user_id, group_object_id=gid, computed=computed)
                 updated += 1
 
@@ -760,8 +888,9 @@ async def recompute_trade_pricing_for_user(
                         {
                             "group_id": str(gid),
                             "trade_sku": group_doc.get("trade_sku"),
+                            "best_scenario_key": computed.get("best_scenario_key"),
                             "max_trade_price_net": computed.get("max_trade_price_net"),
-                            "max_trade_price_net_assuming_zero": computed.get("max_trade_price_net_assuming_zero"),
+                            "max_trade_price_gross": computed.get("max_trade_price_gross"),
                             "guardrails": computed.get("guardrails"),
                         }
                     )
@@ -789,6 +918,7 @@ async def recompute_trade_pricing_for_user(
             "default_required_profit": user_settings.get("default_required_profit"),
             "default_required_margin": user_settings.get("default_required_margin"),
             "vat_rate": user_settings.get("vat_rate"),
+            "default_battery_cost": DEFAULT_BATTERY_COST_GBP,
         },
     }
     if include_item_results:
@@ -804,5 +934,7 @@ async def recompute_trade_pricing_for_user(
     )
 
     return out
+
+
 
 

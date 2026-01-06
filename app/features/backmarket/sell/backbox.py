@@ -20,7 +20,7 @@ Golden price rule (your requirement)
 
 Storage
 -------
-- listings[*].backbox                 : latest snapshot (includes raw own_entry)
+- listings[*].backbox                 : latest snapshot (trimmed; no raw payload)
 - listings[*].backbox_history (<= 50) : rolling observations
 - listings[*].backbox_best_price_to_win: lowest observed price_to_win
 
@@ -114,9 +114,7 @@ async def fetch_backbox_for_listing(
       - None if endpoint returns 404 or no entry for requested market.
       - Snapshot dict otherwise.
 
-    Snapshot includes:
-      - parsed numeric fields (price_to_win, winner_price, etc.)
-      - raw own entry under "raw"
+    Snapshot includes parsed numeric fields (price_to_win, winner_price, etc.).
     """
     client = await get_bm_client_for_user(db, user_id)
     path = f"/ws/backbox/v1/competitors/{listing_ref}"
@@ -178,9 +176,6 @@ async def fetch_backbox_for_listing(
         "price_to_win": price_to_win,
         "winner_price": _parse_amount(own_entry.get("winner_price")),
         "min_price": _parse_amount(own_entry.get("min_price")),
-
-        # Keep raw entry (contains any new fields BM adds)
-        "raw": own_entry,
     }
 
 
@@ -209,7 +204,9 @@ async def persist_backbox_snapshot(
         history_entry: Dict[str, Any] = {"missing": True, "market": market, "fetched_at": fetched_at}
         price_to_win = None
     else:
-        snapshot = {**backbox, "missing": False, "fetched_at": fetched_at}
+        # Defensive: never persist raw payload blobs into pricing_groups.
+        backbox_clean = {k: v for k, v in backbox.items() if k != "raw"}
+        snapshot = {**backbox_clean, "missing": False, "fetched_at": fetched_at}
         price_to_win = backbox.get("price_to_win")
         history_entry = {
             "fetched_at": fetched_at,

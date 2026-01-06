@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 SELL_COL = "bm_sell_listings"
 TRADEIN_COL = "bm_tradein_listings"
+GROUPS_COL = "pricing_groups"
 
 
 def _upper(s: Optional[str]) -> str:
@@ -116,6 +117,32 @@ def _sell_child_snapshot(doc: Dict[str, Any], parsed: ParsedSellSku) -> Dict[str
     if not isinstance(raw, dict):
         raw = {}
 
+    qty_raw = (
+        raw.get("quantity")
+        or raw.get("availableQuantity")
+        or raw.get("available_quantity")
+        or doc.get("quantity")
+    )
+    try:
+        qty = int(qty_raw) if qty_raw is not None else 0
+    except (TypeError, ValueError):
+        qty = 0
+
+
+    # Optional: keep the sell price + currency (useful for UI/debug; small footprint).
+    price_obj = raw.get("price") if isinstance(raw.get("price"), dict) else {}
+    price_amount = price_obj.get("amount") if isinstance(price_obj, dict) else None
+    price_currency = (
+        price_obj.get("currency") if isinstance(price_obj, dict) else None
+    ) or raw.get("currency") or doc.get("currency")
+
+    try:
+        price = float(price_amount) if price_amount is not None else None
+        if price is not None and price <= 0:
+            price = None
+    except (TypeError, ValueError):
+        price = None
+
     return {
         "bm_listing_id": _sell_doc_id(doc),
         "full_sku": _sell_doc_sku(doc),
@@ -123,10 +150,10 @@ def _sell_child_snapshot(doc: Dict[str, Any], parsed: ParsedSellSku) -> Dict[str
         "storage_gb": parsed.storage_gb,
         "sim_type": parsed.sim_type,
         "condition": _upper(parsed.condition),
-        # Best-effort fields (depend on BM payload shape)
-        "currency": raw.get("currency") or doc.get("currency"),
-        "price": raw.get("price") or doc.get("price"),
-        "quantity": 0,
+        "currency": price_currency,
+        "price": price,
+        # Keep this minimal; backbox fields are appended later by backbox.py
+        "quantity": qty,
         "max_price": raw.get("max_price") or doc.get("max_price"),
         "publication_state": raw.get("publication_state") or raw.get("publicationState") or doc.get("publication_state"),
         "last_seen_at": doc.get("last_seen_at"),
@@ -159,6 +186,36 @@ def _choose_better_tradein(existing: Dict[str, Any], candidate: Dict[str, Any]) 
         return candidate
     return existing
 
+
+# Listing subfields that are written by other stages (backbox snapshot persistence).
+_LISTING_DYNAMIC_FIELDS = ("backbox", "backbox_history", "backbox_best_price_to_win")
+
+
+def _child_snapshot_ids(child: Dict[str, Any]) -> List[str]:
+    """Return all plausible IDs for a stored child listing snapshot.
+
+    We keep this liberal because older docs used different keys (bm_uuid vs bm_listing_id).
+    """
+    ids: List[str] = []
+    for k in ("bm_listing_id", "bm_uuid", "listing_id", "bm_id", "uuid", "listing_uuid"):
+        v = child.get(k)
+        if v is not None and str(v).strip():
+            ids.append(str(v).strip())
+    return ids
+
+
+def _merge_listing_dynamic_fields(new_child: Dict[str, Any], existing_child: Dict[str, Any]) -> None:
+    """Preserve dynamic subfields that are maintained by other pipelines."""
+    for k in _LISTING_DYNAMIC_FIELDS:
+        if k in existing_child:
+            new_child[k] = existing_child[k]
+
+
+def _merge_tradein_dynamic_fields(new_tradein: Dict[str, Any], existing_tradein: Dict[str, Any]) -> None:
+    """Preserve competitor snapshots/history when re-building group structure."""
+    for k in ("competitor", "competitor_history", "competitor_updated_at"):
+        if k in existing_tradein:
+            new_tradein[k] = existing_tradein[k]
 
 async def build_pricing_groups_for_user(
     db: AsyncIOMotorDatabase,
@@ -300,6 +357,21 @@ async def build_pricing_groups_for_user(
         else:
             tradeins_by_trade_sku[trade_sku] = _choose_better_tradein(existing, ti)
 
+
+    # Prefetch existing groups so "rebuild" is truly structural-only:
+    # we preserve dynamic fields that are written by other stages
+    # (e.g. backbox snapshots, competitor snapshots).
+    existing_by_trade_sku: Dict[str, Dict[str, Any]] = {}
+    if tradeins_by_trade_sku:
+        cur_existing = db[GROUPS_COL].find(
+            {"user_id": user_id, "trade_sku": {"$in": list(tradeins_by_trade_sku.keys())}},
+            projection={"trade_sku": 1, "listings": 1, "tradein_listing": 1},
+        )
+        async for g in cur_existing:
+            ts = g.get("trade_sku")
+            if isinstance(ts, str) and ts.strip():
+                existing_by_trade_sku[ts.strip()] = g
+
     # -------------------------
     # 3) Build group docs + record "no match" + malformed trade SKU
     # -------------------------
@@ -366,7 +438,45 @@ async def build_pricing_groups_for_user(
         if 0 < max_children_per_group < len(children):
             children = children[:max_children_per_group]
 
+        existing_group = existing_by_trade_sku.get(trade_sku)
+
+        # Copy children so we don't mutate the global sells_index cache.
+        children_out: List[Dict[str, Any]] = [dict(c) for c in children]
+
+        # Preserve listing dynamic fields written by other stages (backbox snapshots + history).
+        if existing_group:
+            existing_children = existing_group.get("listings") or []
+            if isinstance(existing_children, list) and existing_children:
+                existing_child_by_id: Dict[str, Dict[str, Any]] = {}
+                for ex_child in existing_children:
+                    if not isinstance(ex_child, dict):
+                        continue
+                    for cid in _child_snapshot_ids(ex_child):
+                        if cid not in existing_child_by_id:
+                            existing_child_by_id[cid] = ex_child
+
+                for c in children_out:
+                    for cid in _child_snapshot_ids(c):
+                        ex = existing_child_by_id.get(cid)
+                        if ex:
+                            _merge_listing_dynamic_fields(c, ex)
+                            break
+
+        tradein_listing_doc: Dict[str, Any] = {
+            "tradein_id": tid,
+            "product_id": _tradein_product_id(ti),
+            "sku": ti.get("sku"),
+            "aesthetic_grade_code": grade,
+        }
+
+        # Preserve competitor snapshot/history if this group already exists.
+        if existing_group:
+            existing_tradein = existing_group.get("tradein_listing") or {}
+            if isinstance(existing_tradein, dict):
+                _merge_tradein_dynamic_fields(tradein_listing_doc, existing_tradein)
+
         group_doc = {
+            "schema_version": 2,
             "user_id": user_id,
             "group_key": make_group_key(
                 brand=brand_u,
@@ -381,22 +491,12 @@ async def build_pricing_groups_for_user(
             "trade_sku_condition": _upper(parsed_trade.condition),
             "tradein_grade_code": grade,
             "target_sell_condition": target_cond_u,
-            "listings": children,
-            "listings_count": len(children),
-            "tradein_listing": {
-                "tradein_id": tid,
-                "product_id": _tradein_product_id(ti),
-                "sku": ti.get("sku"),
-                "aesthetic_grade_code": grade,
-                "markets": ti.get("markets") or [],
-                "prices": ti.get("prices") or {},
-                "gb_amount": ti.get("gb_amount"),
-                "gb_currency": ti.get("gb_currency"),
-            },
+            "listings": children_out,
+            "listings_count": len(children_out),
+            "tradein_listing": tradein_listing_doc,
             "updated_at": now,
         }
         groups_to_upsert.append(group_doc)
-
     # -------------------------
     # 4) Persist groups
     # -------------------------

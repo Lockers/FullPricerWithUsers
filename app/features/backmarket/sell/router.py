@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from bson import ObjectId
+
 from fastapi import APIRouter, Body, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.db.mongo import get_db
+from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_user
 from app.features.backmarket.sell import sell_anchor_repo
 from app.features.backmarket.sell.activation import (
     activate_session,
@@ -157,7 +160,9 @@ async def recompute_sell_anchor_for_user(
     body: GroupsFilterRequest | None = Body(default=None),
 ):
     groups_filter = body.to_mongo_filter() if body else None
-    return await recompute_sell_anchors_for_user(db, user_id, groups_filter=groups_filter, limit=limit)
+    result = await recompute_sell_anchors_for_user(db, user_id, groups_filter=groups_filter, limit=limit)
+    await recompute_trade_pricing_for_user(db, user_id, groups_filter=groups_filter, limit=limit)
+    return result
 
 
 # 3) keep the single-group recompute (uses group_id, when you have it)
@@ -167,7 +172,21 @@ async def recompute_one_group_sell_anchor(
     group_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    return await recompute_sell_anchor_for_group(db, user_id, group_id)
+    result = await recompute_sell_anchor_for_group(db, user_id, group_id)
+    groups_filter = None
+    gid = ObjectId(group_id)
+    group_doc = await sell_anchor_repo.get_pricing_group(db, user_id, gid)
+    if group_doc:
+        gf = {}
+        if group_doc.get("brand") is not None:
+            gf["brand"] = group_doc.get("brand")
+        if group_doc.get("model") is not None:
+            gf["model"] = group_doc.get("model")
+        if group_doc.get("storage_gb") is not None:
+            gf["storage_gb"] = group_doc.get("storage_gb")
+        groups_filter = gf or None
+    await recompute_trade_pricing_for_user(db, user_id, groups_filter=groups_filter)
+    return result
 
 
 # 4) anchor settings: optionally recompute after saving (so PUT "does something")
@@ -190,6 +209,7 @@ async def put_anchor_settings(
     if not recompute:
         return saved
     recomputed = await recompute_sell_anchors_for_user(db, user_id)
+    await recompute_trade_pricing_for_user(db, user_id)
     return {"settings": saved, "recompute": recomputed}
 
 @router.post("/pricing-cycle/{user_id}/all")

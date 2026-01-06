@@ -81,12 +81,15 @@ async def list_pricing_groups_for_user(
     groups_filter: Optional[Dict[str, Any]] = None,
     projection: Optional[Dict[str, Any]] = None,
     limit: Optional[int] = None,
+    skip: Optional[int] = None,
 ) -> list[Dict[str, Any]]:
     q: Dict[str, Any] = {"user_id": user_id}
     if groups_filter:
         q.update(groups_filter)
 
     cur = db[PRICING_GROUPS_COL].find(q, projection=projection)
+    if skip is not None:
+        cur = cur.skip(int(skip))
     if limit is not None:
         cur = cur.limit(int(limit))
 
@@ -116,5 +119,6 @@ async def get_sell_max_prices_for_listings(
         if lid and isinstance(mp, (int, float)) and mp > 0:
             out[lid] = float(mp)
     return out
+
 
 

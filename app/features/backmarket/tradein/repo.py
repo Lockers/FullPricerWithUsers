@@ -13,9 +13,8 @@ This module contains:
    - Stores latest competitor snapshot + bounded history under:
        tradein_listing.competitor
        tradein_listing.competitor_history
-   - When a gross_price_to_win is available, we also update the pricing_groups "prices"
-     field for that market (normally GB). This lets the rest of the pricer treat the
-     "trade-in price" as the competitor-derived price_to_win.
+   - Only persists competitor snapshots/history into pricing_groups; we intentionally
+     do not promote any additional group-level "prices" fields.
 
 3) Hard-failure bookkeeping (pricing_bad_tradein_skus)
    - Stores tradein_ids that consistently fail due to bad auth/payload/not-found
@@ -380,12 +379,8 @@ async def persist_tradein_competitor_snapshot(
 ) -> None:
     """
     Persist:
-      - pricing_groups.tradein_listing.competitor (latest, includes raw)
+      - pricing_groups.tradein_listing.competitor (latest)
       - pricing_groups.tradein_listing.competitor_history (append, bounded)
-
-    Additionally, if the snapshot contains a gross_price_to_win, we update pricing_groups.prices
-    for that market (normally GB). This makes the competitor-derived price available as the
-    "trade-in price" for the rest of the pipeline.
 
     Single atomic update.
     """
@@ -405,43 +400,6 @@ async def persist_tradein_competitor_snapshot(
         },
     }
 
-    # Optional: promote gross_price_to_win to group-level "prices".
-    mkt = str(snapshot_latest.get("market") or "").upper().strip()
-    cur = str(snapshot_latest.get("currency") or "").upper().strip()
-
-    gross_amount_str_raw = snapshot_latest.get("gross_price_to_win_amount")
-    gross_amount_str: Optional[str] = None
-    if gross_amount_str_raw is not None:
-        s = str(gross_amount_str_raw).strip()
-        if s:
-            gross_amount_str = s
-
-    gross_amount_float_raw = snapshot_latest.get("gross_price_to_win")
-    gross_amount_float: Optional[float] = None
-    if gross_amount_float_raw is not None:
-        try:
-            gross_amount_float = float(gross_amount_float_raw)
-        except (TypeError, ValueError):
-            gross_amount_float = None
-
-    if mkt and cur and gross_amount_str is not None and gross_amount_float is not None:
-        update["$set"].update(
-            {
-                f"prices.{mkt}.amount": gross_amount_str,
-                f"prices.{mkt}.currency": cur,
-                "prices.updated_at": now,
-            }
-        )
-
-        # Back-compat fields used elsewhere in the codebase (GB-only).
-        if mkt == "GB":
-            update["$set"].update(
-                {
-                    "prices.gb_amount": float(gross_amount_float),
-                    "prices.gb_currency": cur,
-                }
-            )
-
     res = await db["pricing_groups"].update_one(
         {"user_id": user_id, "trade_sku": trade_sku},
         update,
@@ -453,6 +411,7 @@ async def persist_tradein_competitor_snapshot(
             user_id,
             trade_sku,
         )
+
 
 
 

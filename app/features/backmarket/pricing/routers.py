@@ -14,6 +14,7 @@ from app.features.backmarket.pricing.trade_pricing_models import (
 from app.features.backmarket.pricing.trade_pricing_service import (
     get_trade_pricing_settings_for_user,
     recompute_trade_pricing_for_user,
+    recompute_trade_pricing_for_group,
     update_trade_pricing_settings_for_group,
     update_trade_pricing_settings_for_user,
 )
@@ -37,7 +38,9 @@ async def put_trade_pricing_settings(
     payload: TradePricingSettingsIn,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> Dict[str, Any]:
-    return await update_trade_pricing_settings_for_user(db, user_id, payload)
+    saved = await update_trade_pricing_settings_for_user(db, user_id, payload)
+    await recompute_trade_pricing_for_user(db, user_id)
+    return saved
 
 
 @router.patch("/trade/{user_id}/groups/{group_id}/settings")
@@ -48,7 +51,9 @@ async def patch_trade_pricing_group_settings(
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> Dict[str, Any]:
     # NOTE: service signature accepts `payload=` (so this call is valid)
-    return await update_trade_pricing_settings_for_group(db, user_id=user_id, group_id=group_id, payload=payload)
+    saved = await update_trade_pricing_settings_for_group(db, user_id=user_id, group_id=group_id, payload=payload)
+    await recompute_trade_pricing_for_group(db, user_id, group_id)
+    return saved
 
 
 @router.post("/trade/{user_id}/recompute")
@@ -72,6 +77,7 @@ async def post_trade_pricing_recompute(
         max_parallel=max_parallel,
         include_item_results=include_item_results,
     )
+
 
 
 
