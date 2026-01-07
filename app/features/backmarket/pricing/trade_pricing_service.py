@@ -663,18 +663,13 @@ def _compute_trade_pricing_for_group_doc(
             "repair_cost_keys": list(sc.repair_cost_keys),
             "missing_cost_keys": missing_cost_keys,
             "repair_cost_total": _round2(repair_total) if repair_total is not None else None,
-            "required_profit": _round2(required_profit),
-            "vat_rate": float(vat_rate),
             "net_sell_anchor": _round2(net_sell) if net_sell is not None else None,
             "max_trade_price_net": max_buy_net,
             "max_trade_price_gross": max_buy_gross,
-            "competitor_net_price_to_win": _round2(competitor_net) if competitor_net is not None else None,
-            "competitor_gross_price_to_win": _round2(competitor_gross) if competitor_gross is not None else None,
             "profit_at_competitor": profit_at_competitor,
             "margin_at_competitor": margin_at_competitor,
             "vat_at_competitor": vat_at_competitor,
             "valid": scenario_valid,
-            "computed_at": computed_at,
         }
 
         scenario_docs.append(scenario_doc)

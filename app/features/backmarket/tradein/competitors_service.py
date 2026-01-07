@@ -470,16 +470,9 @@ def _snapshot_to_latest_doc(snap: TradeinCompetitorSnapshot) -> Dict[str, Any]:
         "missing": bool(snap.missing),
         "fetched_at": snap.fetched_at,
         "is_winning": snap.is_winning,
-        "cf_ray": snap.cf_ray,
-        "current_price_amount": _fmt_money(snap.current_price) if snap.current_price is not None else None,
         "current_price": d2f(snap.current_price),
-        "gross_price_to_win_amount": _fmt_money(snap.gross_price_to_win)
-        if snap.gross_price_to_win is not None
-        else None,
         "gross_price_to_win": d2f(snap.gross_price_to_win),
-        "net_price_to_win_amount": _fmt_money(snap.net_price_to_win) if snap.net_price_to_win is not None else None,
         "net_price_to_win": d2f(snap.net_price_to_win),
-        "raw": snap.raw,
         "error_status": snap.error_status,
         "error_body_prefix": snap.error_body_prefix,
     }
@@ -495,7 +488,6 @@ def _snapshot_to_history_doc(snap: TradeinCompetitorSnapshot) -> Dict[str, Any]:
         "currency": snap.currency,
         "missing": bool(snap.missing),
         "is_winning": snap.is_winning,
-        "cf_ray": snap.cf_ray,
         "current_price": d2f(snap.current_price),
         "gross_price_to_win": d2f(snap.gross_price_to_win),
         "net_price_to_win": d2f(snap.net_price_to_win),
@@ -548,6 +540,27 @@ async def stage1_set_all_to_one(
     cur = str(currency).upper().strip() or DEFAULT_CURRENCY
     max_conc = max(1, int(concurrency))
 
+    # Respect user-disabled trade-in listings.
+    # Convention: if the mirrored buyback listing GB price is 0, the user has
+    # intentionally disabled it (Back Market treats 0 as "off").
+    # When we run Stage 1 (set-to-one) to fetch competitors, we must NOT
+    # re-enable those listings.
+    disabled_ids: Set[str] = set()
+    try:
+        cursor = db["bm_tradein_listings"].find(
+            {"user_id": user_id, "gb_amount": {"$lte": 0}},
+            {"_id": 0, "tradein_id": 1},
+        )
+        async for doc in cursor:
+            tid = doc.get("tradein_id")
+            if tid:
+                disabled_ids.add(str(tid))
+    except Exception:  # noqa: BLE001
+        # Be defensive: if this lookup fails, do NOT break the run.
+        # Worst case we set-to-one as before.
+        logger.exception("[tradein_stage1] failed to load disabled trade-ins user_id=%s", user_id)
+
+
     # Skip trade-ins that are known hard failures.
     skip_ids: Set[str] = await get_bad_tradein_ids_for_user(
         db,
@@ -561,6 +574,8 @@ async def stage1_set_all_to_one(
     skipped = 0
     ok_count = 0
     failed_count = 0
+    skipped_disabled = 0
+
 
     ok_refs: List[TradeinRef] = []
     results: List[Dict[str, Any]] = []
@@ -633,6 +648,10 @@ async def stage1_set_all_to_one(
     for trade_ref in refs:
         if trade_ref.tradein_id in skip_ids:
             skipped += 1
+            if trade_ref.tradein_id in disabled_ids:
+                skipped_disabled += 1
+                continue
+
             continue
 
         batch.append(trade_ref)
@@ -655,6 +674,7 @@ async def stage1_set_all_to_one(
         "found": len(refs),
         "processed": processed,
         "skipped_hard_failed": skipped,
+        "skipped_disabled": skipped_disabled,
         "ok": ok_count,
         "failed": failed_count,
         "elapsed_seconds": elapsed,

@@ -166,13 +166,9 @@ async def fetch_backbox_for_listing(
     currency = _parse_currency(own_entry.get("price_to_win")) or _parse_currency(own_entry.get("price")) or "GBP"
 
     return {
-        "listing_id": own_entry.get("listing_id"),
-        "product_id": own_entry.get("product_id"),
         "market": own_entry.get("market"),
         "currency": currency,
-        "is_winning": own_entry.get("is_winning", False),
-
-        "price": _parse_amount(own_entry.get("price")),
+        "is_winning": bool(own_entry.get("is_winning", False)),
         "price_to_win": price_to_win,
         "winner_price": _parse_amount(own_entry.get("winner_price")),
         "min_price": _parse_amount(own_entry.get("min_price")),
@@ -212,7 +208,6 @@ async def persist_backbox_snapshot(
             "fetched_at": fetched_at,
             "market": backbox.get("market") or market,
             "missing": False,
-            "price": backbox.get("price"),
             "price_to_win": price_to_win,
             "winner_price": backbox.get("winner_price"),
             "min_price": backbox.get("min_price"),

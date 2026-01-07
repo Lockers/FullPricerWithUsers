@@ -234,7 +234,6 @@ def _build_sell_anchor_for_group_doc(
     *,
     safe_ratio: float,
     fee_config: FeeConfig,
-    max_price_map: Dict[str, float],
 ) -> Dict[str, Any]:
     listings = group.get("listings") or []
 
@@ -260,9 +259,8 @@ def _build_sell_anchor_for_group_doc(
     # safest: min(max_price) across children
     group_max_price: Optional[float] = None
     for l in listings:
-        lid = str(l.get("bm_listing_id") or "").strip()
-        mp = max_price_map.get(lid)
-        if mp is None or mp <= 0:
+        mp = _to_pos_float(l.get("max_price"))
+        if mp is None:
             continue
         if group_max_price is None or mp < group_max_price:
             group_max_price = mp
@@ -361,18 +359,10 @@ async def recompute_sell_anchor_for_group(
     safe_ratio = float(settings_doc["safe_ratio"])
     fee_config = _fee_config_or_default(settings_doc.get("fee_config"))
 
-    listing_ids = [
-        str((l.get("bm_listing_id") or "")).strip()
-        for l in (group.get("listings") or [])
-        if l.get("bm_listing_id")
-    ]
-    max_price_map = await repo.get_sell_max_prices_for_listings(db, user_id, listing_ids)
-
     sell_anchor = _build_sell_anchor_for_group_doc(
         group,
         safe_ratio=safe_ratio,
         fee_config=fee_config,
-        max_price_map=max_price_map,
     )
 
     await repo.update_pricing_group_sell_anchor(db, gid, sell_anchor=sell_anchor)
@@ -461,16 +451,9 @@ async def recompute_sell_anchors_for_user(
         cur = cur.limit(int(limit))
 
     groups: list[Dict[str, Any]] = []
-    listing_ids_set: set[str] = set()
 
     async for group_doc in cur:
         groups.append(group_doc)
-        for l in (group_doc.get("listings") or []):
-            lid = str(l.get("bm_listing_id") or "").strip()
-            if lid:
-                listing_ids_set.add(lid)
-
-    max_price_map = await repo.get_sell_max_prices_for_listings(db, user_id, list(listing_ids_set))
 
     sem = asyncio.Semaphore(max(1, int(max_parallel)))
 
@@ -496,7 +479,6 @@ async def recompute_sell_anchors_for_user(
                     group_doc,
                     safe_ratio=safe_ratio,
                     fee_config=fee_config,
-                    max_price_map=max_price_map,
                 )
                 await repo.update_pricing_group_sell_anchor(db, gid, sell_anchor=sell_anchor)
                 updated += 1

@@ -8,7 +8,6 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 PRICING_GROUPS_COL = "pricing_groups"
-SELL_MAX_PRICES_COL = "pricing_sell_max_prices"
 ANCHOR_SETTINGS_COL = "pricing_sell_anchor_settings"
 
 
@@ -96,28 +95,6 @@ async def list_pricing_groups_for_user(
     out: list[Dict[str, Any]] = []
     async for g in cur:
         out.append(g)
-    return out
-
-
-async def get_sell_max_prices_for_listings(
-    db: AsyncIOMotorDatabase,
-    user_id: str,
-    listing_ids: list[str],
-) -> Dict[str, float]:
-    if not listing_ids:
-        return {}
-
-    cur = db[SELL_MAX_PRICES_COL].find(
-        {"user_id": user_id, "bm_listing_id": {"$in": listing_ids}},
-        projection={"bm_listing_id": 1, "max_price": 1},
-    )
-
-    out: Dict[str, float] = {}
-    async for doc in cur:
-        lid = str(doc.get("bm_listing_id") or "").strip()
-        mp = doc.get("max_price")
-        if lid and isinstance(mp, (int, float)) and mp > 0:
-            out[lid] = float(mp)
     return out
 
 

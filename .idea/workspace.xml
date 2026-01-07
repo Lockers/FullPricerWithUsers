@@ -4,18 +4,14 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="third commit, 1st version done, now looking for bugs and refactor possibilities">
+    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="BIg commit, changes, db purge and refactoring">
       <change afterPath="$PROJECT_DIR$/.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing/routers.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/routers.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/repo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/repo.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/repaircost/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -101,7 +97,7 @@
       <workItem from="1766866098108" duration="64603000" />
       <workItem from="1767270552372" duration="42538000" />
       <workItem from="1767604015713" duration="402000" />
-      <workItem from="1767604444920" duration="20594000" />
+      <workItem from="1767604444920" duration="29792000" />
     </task>
     <task id="LOCAL-00001" summary="First commit">
       <option name="closed" value="true" />
@@ -127,7 +123,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767620204083</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="BIg commit, changes, db purge and refactoring">
+      <option name="closed" value="true" />
+      <created>1767704635994</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1767704635994</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -148,6 +152,7 @@
     <MESSAGE value="First commit" />
     <MESSAGE value="second commit" />
     <MESSAGE value="third commit, 1st version done, now looking for bugs and refactor possibilities" />
-    <option name="LAST_COMMIT_MESSAGE" value="third commit, 1st version done, now looking for bugs and refactor possibilities" />
+    <MESSAGE value="BIg commit, changes, db purge and refactoring" />
+    <option name="LAST_COMMIT_MESSAGE" value="BIg commit, changes, db purge and refactoring" />
   </component>
 </project>

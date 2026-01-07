@@ -129,20 +129,6 @@ def _sell_child_snapshot(doc: Dict[str, Any], parsed: ParsedSellSku) -> Dict[str
         qty = 0
 
 
-    # Optional: keep the sell price + currency (useful for UI/debug; small footprint).
-    price_obj = raw.get("price") if isinstance(raw.get("price"), dict) else {}
-    price_amount = price_obj.get("amount") if isinstance(price_obj, dict) else None
-    price_currency = (
-        price_obj.get("currency") if isinstance(price_obj, dict) else None
-    ) or raw.get("currency") or doc.get("currency")
-
-    try:
-        price = float(price_amount) if price_amount is not None else None
-        if price is not None and price <= 0:
-            price = None
-    except (TypeError, ValueError):
-        price = None
-
     return {
         "bm_listing_id": _sell_doc_id(doc),
         "full_sku": _sell_doc_sku(doc),
@@ -150,13 +136,9 @@ def _sell_child_snapshot(doc: Dict[str, Any], parsed: ParsedSellSku) -> Dict[str
         "storage_gb": parsed.storage_gb,
         "sim_type": parsed.sim_type,
         "condition": _upper(parsed.condition),
-        "currency": price_currency,
-        "price": price,
         # Keep this minimal; backbox fields are appended later by backbox.py
         "quantity": qty,
         "max_price": raw.get("max_price") or doc.get("max_price"),
-        "publication_state": raw.get("publication_state") or raw.get("publicationState") or doc.get("publication_state"),
-        "last_seen_at": doc.get("last_seen_at"),
     }
 
 
@@ -464,7 +446,6 @@ async def build_pricing_groups_for_user(
 
         tradein_listing_doc: Dict[str, Any] = {
             "tradein_id": tid,
-            "product_id": _tradein_product_id(ti),
             "sku": ti.get("sku"),
             "aesthetic_grade_code": grade,
         }
