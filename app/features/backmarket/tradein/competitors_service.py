@@ -646,12 +646,14 @@ async def stage1_set_all_to_one(
 
     batch: List[TradeinRef] = []
     for trade_ref in refs:
+        # Never touch user-disabled trade-ins (gb_amount <= 0 in bm_tradein_listings).
+        if trade_ref.tradein_id in disabled_ids:
+            skipped_disabled += 1
+            continue
+
+        # Skip trade-ins that are known hard failures.
         if trade_ref.tradein_id in skip_ids:
             skipped += 1
-            if trade_ref.tradein_id in disabled_ids:
-                skipped_disabled += 1
-                continue
-
             continue
 
         batch.append(trade_ref)

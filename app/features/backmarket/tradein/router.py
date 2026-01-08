@@ -29,6 +29,7 @@ from app.features.backmarket.tradein.tradein_listings import (
 from app.features.backmarket.tradein.competitors_service import (
     run_tradein_competitor_refresh_for_user, stage1_set_all_to_one,
 )
+from app.features.backmarket.tradein.offers_service import run_tradein_offer_updates_for_user
 
 router = APIRouter(prefix="/tradein", tags=["backmarket:tradein"])
 
@@ -185,3 +186,32 @@ async def tradein_set_all_to_one(
     )
     return summary
 
+
+# ---------------------------------------------------------------------------
+# Stage 3: apply final trade-in offers (PUT back to BM)
+# ---------------------------------------------------------------------------
+
+@router.post("/offers/{user_id}/apply")
+async def apply_tradein_offers(
+    user_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    market: str = Query("GB", min_length=2, max_length=4),
+    currency: str = Query("GBP", min_length=3, max_length=3),
+    concurrency: int = Query(10, ge=1, le=200),
+    limit: int | None = Query(None, ge=1, le=100000),
+    dry_run: bool = Query(False),
+    include_item_results: bool = Query(False),
+    require_ok_to_update: bool = Query(True),
+):
+    """Apply the profit-safe final_update_price_gross to Back Market trade-in listings."""
+    return await run_tradein_offer_updates_for_user(
+        db,
+        user_id=user_id,
+        market=market,
+        currency=currency,
+        concurrency=concurrency,
+        limit=limit,
+        dry_run=dry_run,
+        include_item_results=include_item_results,
+        require_ok_to_update=require_ok_to_update,
+    )

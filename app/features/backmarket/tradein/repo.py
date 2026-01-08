@@ -413,8 +413,51 @@ async def persist_tradein_competitor_snapshot(
         )
 
 
+# ---------------------------------------------------------------------------
+# Trade-in offer update persistence (pricing_groups)
+# ---------------------------------------------------------------------------
 
+async def persist_tradein_offer_update(
+    db: AsyncIOMotorDatabase,
+    *,
+    user_id: str,
+    trade_sku: str,
+    snapshot_latest: Dict[str, Any],
+    snapshot_history: Dict[str, Any],
+    history_max: int = 250,
+) -> None:
+    """
+    Persist:
+      - pricing_groups.tradein_listing.offer_update (latest)
+      - pricing_groups.tradein_listing.offer_update_history (append, bounded)
 
+    This stores what WE sent to BM (amount, status, error body prefix, etc) so the
+    automation can be audited without needing a separate log store.
+    """
+    now = _now_utc()
 
+    update: Dict[str, Any] = {
+        "$set": {
+            "tradein_listing.offer_update": snapshot_latest,
+            "tradein_listing.offer_update_updated_at": now,
+            "updated_at": now,
+        },
+        "$push": {
+            "tradein_listing.offer_update_history": {
+                "$each": [snapshot_history],
+                "$slice": -int(history_max),
+            }
+        },
+    }
 
+    res = await db["pricing_groups"].update_one(
+        {"user_id": user_id, "trade_sku": trade_sku},
+        update,
+    )
 
+    if res.matched_count == 0:
+        logger.warning(
+            "[tradein_offer_update] pricing_groups doc not found user_id=%s trade_sku=%s",
+            user_id,
+            trade_sku,
+        )

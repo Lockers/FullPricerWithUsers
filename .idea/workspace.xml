@@ -6,12 +6,6 @@
   <component name="ChangeListManager">
     <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="BIg commit, changes, db purge and refactoring">
       <change afterPath="$PROJECT_DIR$/.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_repo.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/sell_anchor_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -28,16 +22,16 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
-  "lastFilter": {
-    "state": "OPEN",
-    "assignee": "Lockers"
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;Lockers&quot;
   }
-}]]></component>
+}</component>
   <component name="GithubPullRequestsUISettings"><![CDATA[{
   "selectedUrlAndAccountId": {
     "url": "https://github.com/Lockers/FullPricerWithUsers.git",
-    "accountId": "2c0fc9cc-9925-466b-a862-dba6a4af2eb2"
+    "accountId": "b07111f8-75e7-4938-99d6-58367722ac6e"
   }
 }]]></component>
   <component name="ProblemsViewState">
@@ -51,25 +45,25 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "master",
-    "ignore.virus.scanning.warn.message": "true",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "vcs.Git",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;vcs.Git&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
       <recent name="C:\Users\mattl\PycharmProjects\FullPricerWithUsers\app\features\backmarket\transport" />
@@ -98,6 +92,7 @@
       <workItem from="1767270552372" duration="42538000" />
       <workItem from="1767604015713" duration="402000" />
       <workItem from="1767604444920" duration="29792000" />
+      <workItem from="1767866806201" duration="1114000" />
     </task>
     <task id="LOCAL-00001" summary="First commit">
       <option name="closed" value="true" />
@@ -131,7 +126,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767704635994</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="BIg commit, changes, db purge and refactoring">
+      <option name="closed" value="true" />
+      <created>1767867219232</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1767867219232</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

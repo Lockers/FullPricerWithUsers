@@ -199,6 +199,19 @@ async def mongo_lifespan(fastapi_app: FastAPI):
     )
 
     await _ensure_index(
+        db["pricing_groups"],
+        [("user_id", 1), ("tradein_listing.tradein_id", 1)],
+        unique=False,
+        name="idx_pricing_groups_user_tradein_id",
+    )
+    await _ensure_index(
+        db["pricing_groups"],
+        [("user_id", 1), ("trade_pricing.ok_to_update", 1)],
+        unique=False,
+        name="idx_pricing_groups_user_trade_pricing_ok_to_update",
+    )
+
+    await _ensure_index(
         db["pricing_bad_sell_skus"],
         [("user_id", 1), ("listing_id", 1)],
         unique=True,

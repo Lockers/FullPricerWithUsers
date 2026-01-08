@@ -23,7 +23,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from bson import ObjectId
@@ -113,6 +113,37 @@ def _net_to_gross_tradein_gbp(net: float) -> Optional[float]:
     return float(gross.quantize(TWOPLACES, rounding=ROUND_HALF_UP))
 
 
+def _gross_to_net_tradein_gbp(gross: float) -> Optional[float]:
+    """Forward net = gross + gross*0.10 + 10.90 (GB trade-in landed cost)."""
+    try:
+        d = Decimal(str(gross))
+    except InvalidOperation:
+        return None
+
+    net = d + (d * TRADEIN_FEE_RATE) + TRADEIN_DELIVERY_FEE_GBP
+    if net < Decimal("0.00"):
+        net = Decimal("0.00")
+    return float(net.quantize(TWOPLACES, rounding=ROUND_HALF_UP))
+
+
+def _floor_to_pounds(x: float) -> Optional[float]:
+    """Round DOWN to the nearest whole pound (<= x)."""
+    try:
+        d = Decimal(str(x))
+    except InvalidOperation:
+        return None
+    return float(d.to_integral_value(rounding=ROUND_FLOOR))
+
+
+def _ceil_to_pounds(x: float) -> Optional[float]:
+    """Round UP to the nearest whole pound (>= x)."""
+    try:
+        d = Decimal(str(x))
+    except InvalidOperation:
+        return None
+    return float(d.to_integral_value(rounding=ROUND_CEILING))
+
+
 def _parse_object_id(group_id: str) -> ObjectId:
     try:
         return ObjectId(group_id)
@@ -141,6 +172,16 @@ def _get_nested(d: Dict[str, Any], path: str, default: Any = None) -> Any:
 def _extract_net_sell_anchor(group: Dict[str, Any]) -> Optional[float]:
     sell_anchor = group.get("sell_anchor") or {}
     return _to_pos_float(sell_anchor.get("net_used")) or _to_pos_float(sell_anchor.get("lowest_net_sell_price"))
+
+
+def _extract_gross_sell_anchor(group: Dict[str, Any]) -> Optional[float]:
+    """Best-effort gross sell anchor used for display/debug.
+
+    Prefer the sell_anchor.gross_used field (the actual anchor chosen by the sell-anchor
+    selection logic). Fall back to lowest_gross_price_to_win if present.
+    """
+    sell_anchor = group.get("sell_anchor") or {}
+    return _to_pos_float(sell_anchor.get("gross_used")) or _to_pos_float(sell_anchor.get("lowest_gross_price_to_win"))
 
 
 def _extract_currency(group: Dict[str, Any]) -> str:
@@ -243,10 +284,11 @@ async def _build_sell_anchor_index_for_user(
     db: AsyncIOMotorDatabase,
     *,
     user_id: str,
-) -> Dict[Tuple[str, str, str], Dict[str, float]]:
-    """Build {device_key -> {condition -> net_sell_anchor}} for a user.
+) -> Dict[Tuple[str, str, str], Dict[str, Dict[str, float]]]:
+    """Build {device_key -> {condition -> {net, gross}}} for a user.
 
-    Used so trade pricing scenarios like FAIR->EXCELLENT can use the EXCELLENT sell anchor.
+    Used so trade pricing scenarios like FAIR->EXCELLENT can use the EXCELLENT sell anchor
+    (and for UI/debugging to show the *correct* gross/net sell anchor per scenario).
     """
     projection = {
         "brand": 1,
@@ -260,7 +302,7 @@ async def _build_sell_anchor_index_for_user(
         "sell_anchor": 1,
     }
 
-    out: Dict[Tuple[str, str, str], Dict[str, float]] = {}
+    out: Dict[Tuple[str, str, str], Dict[str, Dict[str, float]]] = {}
     cur = db[PRICING_GROUPS_COL].find({"user_id": user_id}, projection=projection)
     async for doc in cur:
         dev = _extract_device_key(doc)
@@ -272,7 +314,11 @@ async def _build_sell_anchor_index_for_user(
         net = _extract_net_sell_anchor(doc)
         if net is None:
             continue
-        out.setdefault(dev, {})[cond] = float(net)
+        gross = _extract_gross_sell_anchor(doc)
+        payload: Dict[str, float] = {"net": float(net)}
+        if gross is not None:
+            payload["gross"] = float(gross)
+        out.setdefault(dev, {})[cond] = payload
     return out
 
 
@@ -549,7 +595,7 @@ def _compute_trade_pricing_for_group_doc(
     group: Dict[str, Any],
     *,
     user_settings: Dict[str, Any],
-    sell_anchor_index: Optional[Dict[Tuple[str, str, str], Dict[str, float]]] = None,
+    sell_anchor_index: Optional[Dict[Tuple[str, str, str], Dict[str, Dict[str, float]]]] = None,
 ) -> Dict[str, Any]:
     computed_at = _now_utc()
 
@@ -570,6 +616,7 @@ def _compute_trade_pricing_for_group_doc(
 
     # Group-level sell anchor (used when scenario sell condition matches this group)
     group_net_sell = _extract_net_sell_anchor(group)
+    group_gross_sell = _extract_gross_sell_anchor(group)
     currency = _extract_currency(group)
 
     competitor_net = _extract_competitor_net_price_to_win(group)
@@ -608,10 +655,18 @@ def _compute_trade_pricing_for_group_doc(
 
         # Resolve the sell anchor for THIS scenario sell condition.
         net_sell: Optional[float] = None
+        gross_sell: Optional[float] = None
         if sc_sell_condition == group_sell_condition:
             net_sell = group_net_sell
+            gross_sell = group_gross_sell
         elif device_key is not None and sell_anchor_index is not None:
-            net_sell = _to_pos_float((sell_anchor_index.get(device_key) or {}).get(sc_sell_condition))
+            entry = (sell_anchor_index.get(device_key) or {}).get(sc_sell_condition) or {}
+            if isinstance(entry, dict):
+                net_sell = _to_pos_float(entry.get("net"))
+                gross_sell = _to_pos_float(entry.get("gross"))
+            else:
+                # Backwards-compatibility if index entries are floats (net only)
+                net_sell = _to_pos_float(entry)
 
         if net_sell is None:
             missing_sell_anchor_conditions.add(sc_sell_condition)
@@ -629,6 +684,19 @@ def _compute_trade_pricing_for_group_doc(
         profit_at_competitor: Optional[float] = None
         margin_at_competitor: Optional[float] = None
         vat_at_competitor: Optional[float] = None
+
+        # Final update guidance for this scenario (what we should PUT back to BM).
+        # NOTE: We always cap at max_trade_price_gross (profit-safe), but we may still
+        # publish that capped value even if it doesn't currently win (so we become next
+        # in line if competitors drop).
+        max_trade_offer_gross: Optional[float] = None
+        competitor_to_win_rounded_gross: Optional[float] = None
+        final_update_price_gross: Optional[float] = None
+        final_update_price_net: Optional[float] = None
+        final_update_reason: Optional[str] = None
+        profit_at_final_update: Optional[float] = None
+        margin_at_final_update: Optional[float] = None
+        vat_at_final_update: Optional[float] = None
 
         repair_total: Optional[float] = None
 
@@ -655,6 +723,45 @@ def _compute_trade_pricing_for_group_doc(
                 if net_sell > 0:
                     margin_at_competitor = _round2(float(profit_at_competitor) / float(net_sell))
 
+            # --- Final update price logic (whole £ in GB) ---
+            # Scenario 1: gross_price_to_win == £1.00 -> no competitors.
+            # Scenario 2: gross_price_to_win > max_trade -> publish max_trade anyway (profit-safe, next-in-line).
+            # Scenario 3: gross_price_to_win < max_trade -> publish just enough to win (rounded up to £1), capped at max_trade.
+            if max_buy_gross is not None and currency == "GBP":
+                cap = _floor_to_pounds(max_buy_gross)
+                if cap is not None and cap >= 1.0:
+                    max_trade_offer_gross = cap
+
+                    # price_to_win is the price required to win; BM returns £1 when no competitor.
+                    if competitor_gross is None or float(competitor_gross) <= 1.01:
+                        final_update_price_gross = cap
+                        final_update_reason = "no_competitor"
+                    else:
+                        competitor_to_win_rounded_gross = _ceil_to_pounds(float(competitor_gross))
+                        if competitor_to_win_rounded_gross is not None and competitor_to_win_rounded_gross <= cap:
+                            final_update_price_gross = competitor_to_win_rounded_gross
+                            final_update_reason = "to_win"
+                        else:
+                            final_update_price_gross = cap
+                            final_update_reason = "capped_at_max_trade"
+
+                    if final_update_price_gross is not None:
+                        final_update_price_net = _gross_to_net_tradein_gbp(final_update_price_gross)
+
+                    if final_update_price_net is not None:
+                        vat_at_final_update = _round2((float(net_sell) - float(final_update_price_net)) * float(vat_rate))
+                        profit_at_final_update = _compute_profit_at_buy_net(
+                            net_sell=net_sell,
+                            net_buy=float(final_update_price_net),
+                            repair_total=repair_total,
+                            vat_rate=vat_rate,
+                        )
+                        if net_sell > 0 and profit_at_final_update is not None:
+                            margin_at_final_update = _round2(float(profit_at_final_update) / float(net_sell))
+                else:
+                    # Cannot publish a profit-safe whole-£ price (min £1).
+                    final_update_reason = "max_trade_below_min_price"
+
         scenario_valid = bool(strict_valid_inputs and max_buy_net is not None)
 
         scenario_doc = {
@@ -664,8 +771,17 @@ def _compute_trade_pricing_for_group_doc(
             "missing_cost_keys": missing_cost_keys,
             "repair_cost_total": _round2(repair_total) if repair_total is not None else None,
             "net_sell_anchor": _round2(net_sell) if net_sell is not None else None,
+            "gross_sell_anchor": _round2(gross_sell) if gross_sell is not None else None,
             "max_trade_price_net": max_buy_net,
             "max_trade_price_gross": max_buy_gross,
+            "max_trade_offer_gross": max_trade_offer_gross,
+            "competitor_to_win_rounded_gross": competitor_to_win_rounded_gross,
+            "final_update_price_gross": final_update_price_gross,
+            "final_update_price_net": final_update_price_net,
+            "final_update_reason": final_update_reason,
+            "profit_at_final_update": profit_at_final_update,
+            "margin_at_final_update": margin_at_final_update,
+            "vat_at_final_update": vat_at_final_update,
             "profit_at_competitor": profit_at_competitor,
             "margin_at_competitor": margin_at_competitor,
             "vat_at_competitor": vat_at_competitor,
@@ -684,6 +800,15 @@ def _compute_trade_pricing_for_group_doc(
 
     max_trade_price_net = best_strict.get("max_trade_price_net") if best_strict else None
     max_trade_price_gross = best_strict.get("max_trade_price_gross") if best_strict else None
+
+    # Best-scenario update fields (whole £ cap + final update price).
+    max_trade_offer_gross = best_strict.get("max_trade_offer_gross") if best_strict else None
+    final_update_price_gross = best_strict.get("final_update_price_gross") if best_strict else None
+    final_update_price_net = best_strict.get("final_update_price_net") if best_strict else None
+    final_update_reason = best_strict.get("final_update_reason") if best_strict else None
+    profit_at_final_update = best_strict.get("profit_at_final_update") if best_strict else None
+    margin_at_final_update = best_strict.get("margin_at_final_update") if best_strict else None
+    vat_at_final_update = best_strict.get("vat_at_final_update") if best_strict else None
 
     competitor_within_strict: Optional[bool] = None
     delta_to_competitor: Optional[float] = None
@@ -708,6 +833,56 @@ def _compute_trade_pricing_for_group_doc(
         "competitor_missing": bool(_get_nested(group, "tradein_listing.competitor.missing", default=False)),
     }
 
+    # Eligibility flag for automated BM buyback updates.
+    # If ok_to_update is False, the cron/update worker MUST NOT send a PUT for this group.
+    tradein_id = _get_nested(group, "tradein_listing.tradein_id")
+    not_ok_reasons: List[str] = []
+
+    if not (isinstance(tradein_id, str) and tradein_id.strip()):
+        not_ok_reasons.append("missing_tradein_id")
+
+    # Currently we only implement the GB landed-cost model end-to-end.
+    if currency != "GBP":
+        not_ok_reasons.append("unsupported_currency")
+
+    if best_strict is None:
+        not_ok_reasons.append("no_valid_scenarios")
+
+    if final_update_reason == "max_trade_below_min_price":
+        not_ok_reasons.append("max_trade_below_min_price")
+
+    if final_update_price_gross is None:
+        not_ok_reasons.append("missing_final_update_price_gross")
+    else:
+        try:
+            if float(final_update_price_gross) < 1.0:
+                not_ok_reasons.append("final_update_below_min_price")
+        except Exception:  # noqa: BLE001
+            not_ok_reasons.append("final_update_below_min_price")
+
+    if max_trade_offer_gross is None:
+        not_ok_reasons.append("missing_max_trade_offer_gross")
+
+    # Sanity: never allow the final update price to exceed the computed cap.
+    if final_update_price_gross is not None and max_trade_offer_gross is not None:
+        try:
+            if float(final_update_price_gross) > float(max_trade_offer_gross) + 1e-9:
+                not_ok_reasons.append("final_update_exceeds_max_trade_offer")
+        except Exception:  # noqa: BLE001
+            not_ok_reasons.append("final_update_exceeds_max_trade_offer")
+
+    # Final sanity: profit must still meet required_profit after rounding/ceiling/flooring.
+    if profit_at_final_update is None:
+        not_ok_reasons.append("missing_profit_at_final_update")
+    else:
+        try:
+            if float(profit_at_final_update) < float(required_profit) - 0.01:
+                not_ok_reasons.append("profit_below_required")
+        except Exception:  # noqa: BLE001
+            not_ok_reasons.append("profit_below_required")
+
+    ok_to_update = len(not_ok_reasons) == 0
+
     return {
         "version": 1,
         "computed_at": computed_at,
@@ -731,6 +906,11 @@ def _compute_trade_pricing_for_group_doc(
                 if isinstance(best_strict, dict) and best_strict.get("net_sell_anchor") is not None
                 else (_round2(group_net_sell) if group_net_sell is not None else None)
             ),
+            "gross_sell_anchor": (
+                best_strict.get("gross_sell_anchor")
+                if isinstance(best_strict, dict) and best_strict.get("gross_sell_anchor") is not None
+                else (_round2(group_gross_sell) if group_gross_sell is not None else None)
+            ),
             "competitor_net_price_to_win": _round2(competitor_net) if competitor_net is not None else None,
             "competitor_gross_price_to_win": _round2(competitor_gross) if competitor_gross is not None else None,
             "repair_costs": repair_costs,
@@ -739,6 +919,15 @@ def _compute_trade_pricing_for_group_doc(
         "best_scenario_key": best_strict.get("key") if best_strict else None,
         "max_trade_price_net": max_trade_price_net,
         "max_trade_price_gross": max_trade_price_gross,
+        "max_trade_offer_gross": max_trade_offer_gross,
+        "final_update_price_gross": final_update_price_gross,
+        "final_update_price_net": final_update_price_net,
+        "final_update_reason": final_update_reason,
+        "profit_at_final_update": profit_at_final_update,
+        "margin_at_final_update": margin_at_final_update,
+        "vat_at_final_update": vat_at_final_update,
+        "ok_to_update": ok_to_update,
+        "not_ok_reasons": not_ok_reasons,
         "competitor_within_strict": competitor_within_strict,
         "delta_to_competitor_net": delta_to_competitor,
         "guardrails": guardrails,
@@ -761,6 +950,12 @@ async def _persist_trade_pricing_computed(
                 "trade_pricing.best_scenario_key": computed.get("best_scenario_key"),
                 "trade_pricing.max_trade_price_net": computed.get("max_trade_price_net"),
                 "trade_pricing.max_trade_price_gross": computed.get("max_trade_price_gross"),
+                "trade_pricing.max_trade_offer_gross": computed.get("max_trade_offer_gross"),
+                "trade_pricing.final_update_price_gross": computed.get("final_update_price_gross"),
+                "trade_pricing.final_update_price_net": computed.get("final_update_price_net"),
+                "trade_pricing.final_update_reason": computed.get("final_update_reason"),
+                "trade_pricing.ok_to_update": computed.get("ok_to_update"),
+                "trade_pricing.not_ok_reasons": computed.get("not_ok_reasons"),
                 "trade_pricing.updated_at": now,
                 "updated_at": now,
             }
@@ -886,6 +1081,11 @@ async def recompute_trade_pricing_for_user(
                             "best_scenario_key": computed.get("best_scenario_key"),
                             "max_trade_price_net": computed.get("max_trade_price_net"),
                             "max_trade_price_gross": computed.get("max_trade_price_gross"),
+                            "max_trade_offer_gross": computed.get("max_trade_offer_gross"),
+                            "final_update_price_gross": computed.get("final_update_price_gross"),
+                            "final_update_reason": computed.get("final_update_reason"),
+                            "ok_to_update": computed.get("ok_to_update"),
+                            "not_ok_reasons": computed.get("not_ok_reasons"),
                             "guardrails": computed.get("guardrails"),
                         }
                     )
