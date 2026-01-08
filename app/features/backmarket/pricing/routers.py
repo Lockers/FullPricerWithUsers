@@ -50,7 +50,6 @@ async def patch_trade_pricing_group_settings(
     payload: TradePricingGroupSettingsIn,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> Dict[str, Any]:
-    # NOTE: service signature accepts `payload=` (so this call is valid)
     saved = await update_trade_pricing_settings_for_group(db, user_id=user_id, group_id=group_id, payload=payload)
     await recompute_trade_pricing_for_group(db, user_id, group_id)
     return saved
@@ -64,12 +63,7 @@ async def post_trade_pricing_recompute(
     include_item_results: bool = Query(False),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Recompute trade pricing (max_trade_price) for a user.
-
-    Notes:
-    - Intended as a manual/debug endpoint. The normal flow is:
-        sell/pricing_cycle and tradein/competitors_service each call this at the end.
-    """
+    """Recompute trade pricing (max_trade_price) for a user."""
     return await recompute_trade_pricing_for_user(
         db,
         user_id,

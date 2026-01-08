@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from bson import ObjectId
+from bson.errors import InvalidId
 
 from fastapi import APIRouter, Body, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.core.errors import BadRequestError, NotFoundError
 from app.db.mongo import get_db
-from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_user
+from app.features.backmarket.pricing.trade_pricing_service import (
+    recompute_trade_pricing_for_group,
+    recompute_trade_pricing_for_user,
+)
 from app.features.backmarket.sell import sell_anchor_repo
 from app.features.backmarket.sell.activation import (
     activate_session,
@@ -20,10 +25,12 @@ from app.features.backmarket.sell.pricing_cycle import run_sell_pricing_cycle_fo
 from app.features.backmarket.sell.schemas import PricingGroupsFilterIn
 from app.features.backmarket.sell.sell_listings import fetch_all_sell_listings, sync_sell_listings_to_db
 from app.features.backmarket.sell.sell_anchor_models import SellAnchorSettings
+from app.features.backmarket.pricing.pricing_overrides_schemas import ManualSellAnchorGrossUpdate
 from app.features.backmarket.sell.sell_anchor_service import (
     get_sell_anchor_settings_for_user,
+    recompute_sell_anchor_for_group,
+    recompute_sell_anchors_for_user,
     update_sell_anchor_settings_for_user,
-    recompute_sell_anchor_for_group, recompute_sell_anchors_for_user,
 )
 from app.features.backmarket.sell.service import run_price_all_for_user
 
@@ -187,6 +194,57 @@ async def recompute_one_group_sell_anchor(
         groups_filter = gf or None
     await recompute_trade_pricing_for_user(db, user_id, groups_filter=groups_filter)
     return result
+
+
+# 3b) set/clear manual gross sell anchor for a group (optionally recompute pricing)
+@router.patch("/pricing-groups/{user_id}/{group_id}/manual-sell-anchor")
+async def patch_manual_sell_anchor_for_group(
+    user_id: str,
+    group_id: str,
+    payload: ManualSellAnchorGrossUpdate,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    recompute: bool = Query(True),
+):
+    """Set/clear per-group manual gross sell anchor.
+
+    Stored on pricing_groups rows as `manual_sell_anchor_gross`.
+
+    If `recompute=true` (default), this endpoint also recomputes:
+      - sell_anchor for this group
+      - trade_pricing for this group
+    """
+    try:
+        gid = ObjectId(group_id)
+    except (InvalidId, TypeError) as exc:
+        raise BadRequestError(code="invalid_group_id", message="Invalid group_id") from exc
+
+    updated = await sell_anchor_repo.update_pricing_group_manual_sell_anchor_gross(
+        db,
+        user_id=user_id,
+        group_id=gid,
+        manual_gross=payload.manual_sell_anchor_gross,
+    )
+    if not updated:
+        raise NotFoundError(code="pricing_group_not_found", message="pricing_group not found")
+
+    if not recompute:
+        return {
+            "user_id": user_id,
+            "group_id": group_id,
+            "manual_sell_anchor_gross": payload.manual_sell_anchor_gross,
+            "recomputed": False,
+        }
+
+    sell_anchor_res = await recompute_sell_anchor_for_group(db, user_id, group_id)
+    trade_pricing_res = await recompute_trade_pricing_for_group(db, user_id, group_id)
+    return {
+        "user_id": user_id,
+        "group_id": group_id,
+        "manual_sell_anchor_gross": payload.manual_sell_anchor_gross,
+        "recomputed": True,
+        "sell_anchor": sell_anchor_res.get("sell_anchor"),
+        "trade_pricing": trade_pricing_res.get("trade_pricing"),
+    }
 
 
 # 4) anchor settings: optionally recompute after saving (so PUT "does something")
