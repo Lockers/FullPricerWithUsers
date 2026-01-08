@@ -4,8 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="BIg commit, changes, db purge and refactoring">
+    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="nEARLY FINAL, NEED TO TEST">
       <change afterPath="$PROJECT_DIR$/.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -92,7 +95,7 @@
       <workItem from="1767270552372" duration="42538000" />
       <workItem from="1767604015713" duration="402000" />
       <workItem from="1767604444920" duration="29792000" />
-      <workItem from="1767866806201" duration="7897000" />
+      <workItem from="1767866806201" duration="9252000" />
     </task>
     <task id="LOCAL-00001" summary="First commit">
       <option name="closed" value="true" />
@@ -142,7 +145,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767879341230</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="nEARLY FINAL, NEED TO TEST">
+      <option name="closed" value="true" />
+      <created>1767888625724</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1767888625724</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -164,6 +175,7 @@
     <MESSAGE value="second commit" />
     <MESSAGE value="third commit, 1st version done, now looking for bugs and refactor possibilities" />
     <MESSAGE value="BIg commit, changes, db purge and refactoring" />
-    <option name="LAST_COMMIT_MESSAGE" value="BIg commit, changes, db purge and refactoring" />
+    <MESSAGE value="nEARLY FINAL, NEED TO TEST" />
+    <option name="LAST_COMMIT_MESSAGE" value="nEARLY FINAL, NEED TO TEST" />
   </component>
 </project>

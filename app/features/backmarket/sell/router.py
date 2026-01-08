@@ -282,6 +282,12 @@ async def price_all(
     tradein_currency: str = Query("GBP", min_length=3, max_length=3),
     tradein_wait_seconds: int = Query(60, ge=0, le=600),
 
+    apply_tradein_offers: bool = Query(True),
+    offers_concurrency: int = Query(10, ge=1, le=200),
+    offers_limit: int | None = Query(None, ge=1, le=100000),
+    offers_dry_run: bool = Query(False),
+    offers_require_ok_to_update: bool = Query(True),
+
     include_stage_results: bool = Query(False),
     include_item_results: bool = Query(False),
 ):
@@ -293,6 +299,12 @@ async def price_all(
         tradein_market=tradein_market,
         tradein_currency=tradein_currency,
         tradein_wait_seconds=tradein_wait_seconds,
+        apply_tradein_offers=apply_tradein_offers,
+        offers_concurrency=offers_concurrency,
+        offers_limit=offers_limit,
+        offers_dry_run=offers_dry_run,
+        offers_require_ok_to_update=offers_require_ok_to_update,
         include_stage_results=include_stage_results,
         include_item_results=include_item_results,
     )
+

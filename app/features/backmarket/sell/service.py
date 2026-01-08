@@ -11,6 +11,7 @@ from app.features.backmarket.sell.filters import groups_filter_from_selection
 from app.features.backmarket.sell.pricing_cycle import run_sell_pricing_cycle_for_user
 from app.features.backmarket.sell.schemas import PricingGroupsFilterIn
 from app.features.backmarket.tradein.competitors_service import run_tradein_competitor_refresh_for_user
+from app.features.backmarket.tradein.offers_service import run_tradein_offer_updates_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ async def run_sell_pricing_cycle_for_user_with_selection(
         groups_filter=groups_filter,
     )
 
+
 async def run_price_all_for_user(
     db: AsyncIOMotorDatabase,
     *,
@@ -88,13 +90,22 @@ async def run_price_all_for_user(
     tradein_market: str = "GB",
     tradein_currency: str = "GBP",
     tradein_wait_seconds: int = 60,
+    apply_tradein_offers: bool = True,
+    offers_concurrency: int = 10,
+    offers_limit: Optional[int] = None,
+    offers_dry_run: bool = False,
+    offers_require_ok_to_update: bool = True,
     include_stage_results: bool = False,
     include_item_results: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Orchestrator for "Price all".
-    - Keeps router dumb.
-    - Best-effort: attempts both sell + trade-in and returns both results.
+    """Orchestrator for "Price all".
+
+    Stages:
+      1) Sell pricing cycle (sell listings -> activation -> backbox -> sell anchors -> trade pricing)
+      2) Trade-in competitor refresh (set-to-one -> wait -> fetch competitors -> trade pricing recompute)
+      3) (Optional) Apply profit-safe trade-in offers (PUT to BM) using trade_pricing.final_update_price_gross
+
+    Best-effort: attempts all stages and returns per-stage results.
     """
     t0 = time.perf_counter()
 
@@ -102,6 +113,7 @@ async def run_price_all_for_user(
         "user_id": user_id,
         "sell": None,
         "tradein": None,
+        "tradein_offers": None,
     }
 
     try:
@@ -129,5 +141,25 @@ async def run_price_all_for_user(
         logger.exception("[price_all] tradein failed user_id=%s", user_id)
         out["tradein"] = {"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}
 
+    if apply_tradein_offers:
+        try:
+            out["tradein_offers"] = await run_tradein_offer_updates_for_user(
+                db,
+                user_id=user_id,
+                market=tradein_market,
+                currency=tradein_currency,
+                concurrency=offers_concurrency,
+                limit=offers_limit,
+                dry_run=offers_dry_run,
+                include_item_results=include_item_results,
+                require_ok_to_update=offers_require_ok_to_update,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[price_all] tradein_offers failed user_id=%s", user_id)
+            out["tradein_offers"] = {"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}
+    else:
+        out["tradein_offers"] = {"skipped": True, "reason": "apply_tradein_offers=false"}
+
     out["elapsed_seconds"] = time.perf_counter() - t0
     return out
+

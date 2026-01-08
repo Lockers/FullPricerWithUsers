@@ -20,6 +20,14 @@ for controlled ops / cron / diagnostics.)
 from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from bson import ObjectId
+from bson.errors import InvalidId
+
+from app.core.errors import BadRequestError, NotFoundError
+from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_group
+from app.features.backmarket.transport.exceptions import BMClientError
+
+
 from app.db.mongo import get_db
 from app.features.backmarket.tradein.repo import TradeinListingsRepo
 from app.features.backmarket.tradein.tradein_listings import (
@@ -29,7 +37,12 @@ from app.features.backmarket.tradein.tradein_listings import (
 from app.features.backmarket.tradein.competitors_service import (
     run_tradein_competitor_refresh_for_user, stage1_set_all_to_one,
 )
-from app.features.backmarket.tradein.offers_service import run_tradein_offer_updates_for_user
+from app.features.backmarket.tradein.offers_service import (
+    run_tradein_offer_update_for_group,
+    run_tradein_offer_updates_for_user,
+)
+
+
 
 router = APIRouter(prefix="/tradein", tags=["backmarket:tradein"])
 
@@ -215,3 +228,53 @@ async def apply_tradein_offers(
         include_item_results=include_item_results,
         require_ok_to_update=require_ok_to_update,
     )
+
+@router.post("/offers/{user_id}/apply-group/{group_id}")
+async def apply_tradein_offer_for_group(
+    user_id: str,
+    group_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    market: str = Query("GB", min_length=2, max_length=4),
+    currency: str = Query("GBP", min_length=3, max_length=3),
+    dry_run: bool = Query(False),
+    require_ok_to_update: bool = Query(True),
+    recompute: bool = Query(True),
+):
+    """Apply a single group's profit-safe trade-in offer to Back Market (drawer action)."""
+    try:
+        gid = ObjectId(group_id)
+    except (InvalidId, TypeError) as exc:
+        raise BadRequestError(code="invalid_group_id", message="Invalid group_id") from exc
+
+    exists = await db["pricing_groups"].find_one({"_id": gid, "user_id": user_id}, projection={"_id": 1})
+    if not exists:
+        raise NotFoundError(code="pricing_group_not_found", message="pricing_group not found")
+
+    trade_pricing = None
+    if recompute:
+        try:
+            recomputed = await recompute_trade_pricing_for_group(db, user_id, group_id)
+            trade_pricing = recomputed.get("trade_pricing")
+        except BMClientError as exc:
+            raise NotFoundError(code="pricing_group_not_found", message="pricing_group not found") from exc
+
+    applied = await run_tradein_offer_update_for_group(
+        db,
+        user_id=user_id,
+        group_id=group_id,
+        market=market,
+        currency=currency,
+        dry_run=dry_run,
+        require_ok_to_update=require_ok_to_update,
+    )
+
+    if applied.get("error") == "pricing_group_not_found":
+        raise NotFoundError(code="pricing_group_not_found", message="pricing_group not found")
+
+    return {
+        "user_id": user_id,
+        "group_id": group_id,
+        "recomputed": bool(recompute),
+        "trade_pricing": trade_pricing,
+        "apply": applied,
+    }
