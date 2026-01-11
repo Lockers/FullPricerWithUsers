@@ -33,6 +33,7 @@ from typing import Any, Dict, Optional
 
 import anyio
 import httpx
+from pymongo.errors import PyMongoError
 
 from app.features.backmarket.rate.circuit_breaker import CircuitBreaker
 from app.features.backmarket.rate.controller import RateController
@@ -195,7 +196,7 @@ class BackMarketClient:
         async def _safe_persist(where: str) -> None:
             try:
                 await self._rates.persist(state)
-            except Exception as persist_exc:
+            except PyMongoError as persist_exc:
                 logger.warning(
                     "[bm_request] RATE_PERSIST_FAILED req_id=%s user_id=%s endpoint=%s where=%s err=%r",
                     req_id,

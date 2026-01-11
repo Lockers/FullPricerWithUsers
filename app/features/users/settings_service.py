@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import ValidationError
+from pymongo.errors import PyMongoError
 
 from app.core.errors import BadRequestError, NotFoundError
 from app.features.users.repo import UsersRepo
@@ -65,7 +67,7 @@ def _safe_tradein_config(user_id: str, doc: Dict[str, Any]) -> TradeinConfig:
     cfg_dict = doc.get("tradein_config") or {}
     try:
         return TradeinConfig(**cfg_dict)
-    except Exception:
+    except (ValidationError, TypeError):
         # This should be rare; it can happen if historic data was written with invalid/null fields.
         logger.exception("tradein_config_invalid user_id=%s; falling back to defaults", user_id)
         return TradeinConfig()
@@ -187,16 +189,16 @@ async def init_user_with_bm(db: AsyncIOMotorDatabase, data: UserInitRequest) -> 
                 "updated_at": now,
             },
         )
-    except Exception:
+    except PyMongoError:
         logger.exception("init_user_with_bm:settings_upsert_failed user_id=%s; attempting rollback", user_id)
         # Best-effort cleanup
         try:
             await settings_repo.delete(user_id)
-        except Exception:
+        except PyMongoError:
             logger.exception("init_user_with_bm:rollback_settings_delete_failed user_id=%s", user_id)
         try:
             await users_repo.delete(user_id)
-        except Exception:
+        except PyMongoError:
             logger.exception("init_user_with_bm:rollback_user_delete_failed user_id=%s", user_id)
         raise
 

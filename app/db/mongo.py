@@ -15,7 +15,7 @@ from typing import List
 
 from fastapi import FastAPI, Request
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from pymongo.errors import OperationFailure
+from pymongo.errors import OperationFailure, PyMongoError
 
 from app.core.config import config
 
@@ -55,7 +55,7 @@ async def _drop_unique_indexes_without_user_id(col, *, user_id_field: str = "use
     """
     try:
         info = await col.index_information()
-    except Exception:
+    except PyMongoError:
         logger.exception("Failed to read index_information for %s", col.name)
         return []
 
@@ -96,7 +96,7 @@ async def _ensure_index_exact(col, keys, *, unique: bool, name: str) -> None:
     keys = list(keys)
     try:
         info = await col.index_information()
-    except Exception:
+    except PyMongoError:
         logger.exception("Failed to read index_information for %s", col.name)
         await _ensure_index(col, keys, unique=unique, name=name)
         return

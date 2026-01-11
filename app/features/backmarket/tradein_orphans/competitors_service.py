@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
 from app.features.backmarket.tradein.competitors_service import (
     DEFAULT_CURRENCY,
@@ -55,7 +56,7 @@ def _d2f(x: Optional[Decimal]) -> Optional[float]:
         return None
     try:
         return float(x)
-    except Exception:  # noqa: BLE001
+    except (TypeError, ValueError):
         return None
 
 
@@ -177,7 +178,7 @@ async def run_tradein_orphan_competitor_refresh_for_user(
             tid = doc.get("tradein_id")
             if tid:
                 disabled_ids.add(str(tid))
-    except Exception:  # noqa: BLE001
+    except PyMongoError:
         logger.exception("[tradein_orphans_competitors] failed loading disabled trade-ins user_id=%s", user_id)
 
     # Skip known hard failures (400/401/404/422 from prior runs).
@@ -231,7 +232,7 @@ async def run_tradein_orphan_competitor_refresh_for_user(
                     status_code=int(status),
                     detail=error_body_prefix,
                 )
-            except Exception:  # noqa: BLE001
+            except PyMongoError:
                 logger.exception("[tradein_orphans_competitors] upsert_bad_tradein failed tradein_id=%s", ref.tradein_id)
 
     await asyncio.gather(*[_set_one(r) for r in refs])
@@ -290,7 +291,7 @@ async def run_tradein_orphan_competitor_refresh_for_user(
                 history_doc=history_doc,
                 updated_at=_now_utc(),
             )
-        except Exception:  # noqa: BLE001
+        except PyMongoError:
             stage2_persist_failed += 1
             logger.exception(
                 "[tradein_orphans_competitors] persist failed orphan_id=%s tradein_id=%s",

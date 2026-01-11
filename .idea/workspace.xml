@@ -4,10 +4,28 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="nEARLY FINAL, NEED TO TEST">
+    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="Beta 2 with orphan trade in pricing">
+      <change beforePath="$PROJECT_DIR$/.env" beforeDir="false" afterPath="$PROJECT_DIR$/.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/FullPricerWithUsers.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/FullPricerWithUsers.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/dictionaries/project.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/dictionaries/project.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/modules.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/db/mongo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/db/mongo.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing_groups/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/backbox.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/competitors_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/offers_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/offers_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein_orphans/competitors_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein_orphans/competitors_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein_orphans/offers_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein_orphans/offers_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein_orphans/sell_anchor_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein_orphans/sell_anchor_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/depreciation_api/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/depreciation_api/router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/users/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/users/settings_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/users/settings_service.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -98,7 +116,7 @@
       <workItem from="1767952622211" duration="403000" />
       <workItem from="1767953169365" duration="674000" />
       <workItem from="1767992364387" duration="8010000" />
-      <workItem from="1768126589648" duration="458000" />
+      <workItem from="1768126589648" duration="2769000" />
     </task>
     <task id="LOCAL-00001" summary="First commit">
       <option name="closed" value="true" />
@@ -156,7 +174,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767888625724</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="Beta 2 with orphan trade in pricing">
+      <option name="closed" value="true" />
+      <created>1768127086702</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1768127086702</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -179,6 +205,7 @@
     <MESSAGE value="third commit, 1st version done, now looking for bugs and refactor possibilities" />
     <MESSAGE value="BIg commit, changes, db purge and refactoring" />
     <MESSAGE value="nEARLY FINAL, NEED TO TEST" />
-    <option name="LAST_COMMIT_MESSAGE" value="nEARLY FINAL, NEED TO TEST" />
+    <MESSAGE value="Beta 2 with orphan trade in pricing" />
+    <option name="LAST_COMMIT_MESSAGE" value="Beta 2 with orphan trade in pricing" />
   </component>
 </project>

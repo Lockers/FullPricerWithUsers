@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
 from app.features.backmarket.tradein.competitors_service import (
     DEFAULT_CURRENCY,
@@ -21,6 +23,9 @@ from app.features.backmarket.tradein.repo import get_bad_tradein_ids_for_user, u
 from app.features.backmarket.transport.cache import get_bm_client_for_user
 from app.features.backmarket.transport.http_utils import parse_cf_ray, safe_text_prefix
 from app.features.backmarket.tradein_orphans.repo import ORPHAN_COL, TradeinOrphansRepo
+
+
+logger = logging.getLogger(__name__)
 
 
 def _now_utc() -> datetime:
@@ -316,8 +321,13 @@ async def run_tradein_orphan_offer_updates_for_user(
                 }
 
                 await repo.persist_offer_update(user_id=user_id, orphan_id=r.orphan_id, offer_update_doc=offer_doc, updated_at=_now_utc())
-            except Exception:  # noqa: BLE001
+            except PyMongoError:
                 err += 1
+                logger.exception(
+                    "[tradein_orphans_offers] worker failed orphan_id=%s tradein_id=%s",
+                    r.orphan_id,
+                    r.tradein_id,
+                )
 
     await asyncio.gather(*[_worker(r) for r in refs])
 

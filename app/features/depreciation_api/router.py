@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -52,7 +53,7 @@ def _now_dt() -> datetime:
 def _oid_str(oid: Any) -> str:
     try:
         return str(oid)
-    except Exception:
+    except TypeError:
         return "unknown"
 
 
@@ -186,7 +187,7 @@ async def compute_for_pricing_group(
 ):
     try:
         oid = ObjectId(pricing_group_id)
-    except Exception:
+    except (InvalidId, TypeError):
         raise HTTPException(status_code=422, detail="Invalid pricing_group_id (expected ObjectId hex)")
 
     pg = await db["pricing_groups"].find_one({"_id": oid})
@@ -391,7 +392,7 @@ async def observe_from_orderline(
     if not doc:
         try:
             doc = await col.find_one({"user_id": req.user_id, "orderline_id": int(orderline_id)})
-        except Exception:
+        except (TypeError, ValueError):
             doc = None
     if not doc:
         raise HTTPException(status_code=404, detail="bm_orderline not found")
@@ -403,14 +404,14 @@ async def observe_from_orderline(
     price_raw = doc.get("price") or doc.get("unit_price")
     try:
         observed_price = float(price_raw)
-    except Exception:
+    except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="bm_orderline price not parseable")
 
     dt = doc.get("date_creation") or doc.get("date_payment") or doc.get("created_at")
     if isinstance(dt, str):
         try:
             observed_at_dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-        except Exception:
+        except ValueError:
             observed_at_dt = _now_dt()
     elif isinstance(dt, datetime):
         observed_at_dt = dt
@@ -419,7 +420,7 @@ async def observe_from_orderline(
 
     try:
         brand, model, storage_gb, grade = parse_sku(listing_sku)
-    except Exception as e:
+    except ValueError as e:
         raise HTTPException(status_code=422, detail=f"Could not parse listing sku: {e}")
 
     obs_req = DepreciationObserveRequest(
@@ -463,7 +464,7 @@ async def observe_from_order(
     if not doc:
         try:
             doc = await col.find_one({"user_id": req.user_id, "order_id": int(order_id)})
-        except Exception:
+        except (TypeError, ValueError):
             doc = None
     if not doc:
         raise HTTPException(status_code=404, detail="bm_order not found")
@@ -473,7 +474,7 @@ async def observe_from_order(
     if isinstance(dt, str):
         try:
             order_dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-        except Exception:
+        except ValueError:
             order_dt = _now_dt()
     elif isinstance(dt, datetime):
         order_dt = dt
@@ -489,14 +490,14 @@ async def observe_from_order(
         price_raw = ol.get("price") or ol.get("unit_price")
         try:
             observed_price = float(price_raw)
-        except Exception:
+        except (TypeError, ValueError):
             continue
 
         dt2 = ol.get("date_creation") or ol.get("date_payment")
         if isinstance(dt2, str):
             try:
                 observed_at_dt = datetime.fromisoformat(dt2.replace("Z", "+00:00"))
-            except Exception:
+            except ValueError:
                 observed_at_dt = order_dt
         elif isinstance(dt2, datetime):
             observed_at_dt = dt2
@@ -505,7 +506,7 @@ async def observe_from_order(
 
         try:
             brand, model, storage_gb, grade = parse_sku(listing_sku)
-        except Exception:
+        except ValueError:
             continue
 
         obs_req = DepreciationObserveRequest(

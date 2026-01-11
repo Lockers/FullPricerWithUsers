@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
 from app.features.backmarket.sell.activation import (
     activate_session,
@@ -241,7 +242,7 @@ async def _backbox_then_deactivate_per_listing(
                 fetched_at=fetched_at,
                 market=market,
             )
-        except Exception as exc:  # noqa: BLE001
+        except PyMongoError as exc:
             # Persistence failure is serious, but we must still proceed to deactivation to stay safe.
             persist_error = str(exc)
 

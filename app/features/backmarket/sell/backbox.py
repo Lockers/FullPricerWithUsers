@@ -136,7 +136,7 @@ async def fetch_backbox_for_listing(
 
     try:
         data = resp.json()
-    except Exception as exc:  # noqa: BLE001
+    except ValueError as exc:
         raise BMClientError(f"Invalid JSON from Backbox for listing {listing_ref}") from exc
 
     if not isinstance(data, list):

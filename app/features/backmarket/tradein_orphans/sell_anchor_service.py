@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import ValidationError
 
 from app.core.errors import NotFoundError
 from app.features.backmarket.sell.sell_anchor_models import FeeConfig
@@ -29,7 +30,7 @@ def _fee_config_or_default(raw: Any) -> FeeConfig:
         return DEFAULT_FEE_CONFIG
     try:
         cfg = raw if isinstance(raw, FeeConfig) else FeeConfig(**raw)
-    except Exception:  # noqa: BLE001
+    except (ValidationError, TypeError):
         return DEFAULT_FEE_CONFIG
 
     keys = {str(i.key).strip() for i in (cfg.items or []) if getattr(i, "key", None)}

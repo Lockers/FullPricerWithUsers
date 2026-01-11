@@ -555,7 +555,7 @@ async def stage1_set_all_to_one(
             tid = doc.get("tradein_id")
             if tid:
                 disabled_ids.add(str(tid))
-    except Exception:  # noqa: BLE001
+    except PyMongoError:
         # Be defensive: if this lookup fails, do NOT break the run.
         # Worst case we set-to-one as before.
         logger.exception("[tradein_stage1] failed to load disabled trade-ins user_id=%s", user_id)
@@ -1060,6 +1060,6 @@ def hard_failure_reason_code(status: int) -> Optional[str]:
     """
     try:
         return _hard_failure_reason_for_update_status(int(status))
-    except Exception:  # noqa: BLE001
+    except (TypeError, ValueError):
         return None
 

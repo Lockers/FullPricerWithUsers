@@ -59,16 +59,16 @@ async def create_user(db: AsyncIOMotorDatabase, data: UserCreate) -> UserRead:
                 "tradein_config": tradein_cfg.model_dump(),
             },
         )
-    except Exception:
+    except PyMongoError:
         logger.exception("create_user:settings_upsert_failed user_id=%s; attempting rollback", user_id)
         # Best-effort cleanup
         try:
             await settings_repo.delete(user_id)
-        except Exception:
+        except PyMongoError:
             logger.exception("create_user:rollback_settings_delete_failed user_id=%s", user_id)
         try:
             await repo.delete(user_id)
-        except Exception:
+        except PyMongoError:
             logger.exception("create_user:rollback_user_delete_failed user_id=%s", user_id)
         raise
 

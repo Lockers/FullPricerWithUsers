@@ -9,8 +9,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
 from app.core.errors import BadRequestError, NotFoundError
 from app.db.mongo import get_db
@@ -23,7 +25,7 @@ router = APIRouter(prefix="/pricing-groups", tags=["pricing-groups"])
 def _parse_object_id(group_id: str) -> ObjectId:
     try:
         return ObjectId(group_id)
-    except Exception as exc:  # noqa: BLE001
+    except (InvalidId, TypeError) as exc:
         raise BadRequestError(code="invalid_group_id", message="Invalid group_id") from exc
 
 
@@ -133,6 +135,7 @@ async def pricing_groups_fix_indexes(db: AsyncIOMotorDatabase = Depends(get_db))
     info = await col.index_information()
 
     dropped: List[str] = []
+    errors: List[Dict[str, str]] = []
 
     for name, spec in info.items():
         if name == "_id_":
@@ -147,15 +150,15 @@ async def pricing_groups_fix_indexes(db: AsyncIOMotorDatabase = Depends(get_db))
             try:
                 await col.drop_index(name)
                 dropped.append(name)
-            except Exception:
-                pass
+            except PyMongoError as exc:
+                errors.append({"action": "drop_index", "name": name, "error": str(exc)})
 
     # Ensure expected unique index exists (do not force name to avoid options conflicts)
     try:
         await col.create_index([("user_id", 1), ("trade_sku", 1)], unique=True)
-    except Exception:
-        pass
+    except PyMongoError as exc:
+        errors.append({"action": "create_index", "name": "(user_id,trade_sku) unique", "error": str(exc)})
 
-    return {"ok": True, "dropped": dropped, "diag": await _pricing_groups_index_diag(db)}
+    return {"ok": True, "dropped": dropped, "errors": errors, "diag": await _pricing_groups_index_diag(db)}
 
 

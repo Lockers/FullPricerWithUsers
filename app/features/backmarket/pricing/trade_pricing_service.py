@@ -657,10 +657,9 @@ def _compute_trade_pricing_for_group_doc(
         # Scenario sell anchor MUST match the scenario sell condition.
         sc_sell_condition = group_sell_condition
         if isinstance(sc.route, str) and "->" in sc.route:
-            try:
-                sc_sell_condition = sc.route.split("->", 1)[1].strip().upper() or group_sell_condition
-            except Exception:
-                sc_sell_condition = group_sell_condition
+            rhs = sc.route.split("->", 1)[1].strip().upper()
+            if rhs:
+                sc_sell_condition = rhs
 
         # Resolve the sell anchor for THIS scenario sell condition.
         net_sell: Optional[float] = None
@@ -866,7 +865,7 @@ def _compute_trade_pricing_for_group_doc(
         try:
             if float(final_update_price_gross) < 1.0:
                 not_ok_reasons.append("final_update_below_min_price")
-        except Exception:  # noqa: BLE001
+        except (TypeError, ValueError):
             not_ok_reasons.append("final_update_below_min_price")
 
     if max_trade_offer_gross is None:
@@ -877,7 +876,7 @@ def _compute_trade_pricing_for_group_doc(
         try:
             if float(final_update_price_gross) > float(max_trade_offer_gross) + 1e-9:
                 not_ok_reasons.append("final_update_exceeds_max_trade_offer")
-        except Exception:  # noqa: BLE001
+        except (TypeError, ValueError):
             not_ok_reasons.append("final_update_exceeds_max_trade_offer")
 
     # Final sanity: profit must still meet required_profit after rounding/ceiling/flooring.
@@ -887,7 +886,7 @@ def _compute_trade_pricing_for_group_doc(
         try:
             if float(profit_at_final_update) < float(required_profit) - 0.01:
                 not_ok_reasons.append("profit_below_required")
-        except Exception:  # noqa: BLE001
+        except (TypeError, ValueError):
             not_ok_reasons.append("profit_below_required")
 
     ok_to_update = len(not_ok_reasons) == 0

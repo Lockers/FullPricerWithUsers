@@ -9,7 +9,9 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
 from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_group
 from app.features.backmarket.tradein.competitors_service import (
@@ -28,7 +30,7 @@ from app.features.backmarket.tradein.repo import (
     upsert_bad_tradein,
 )
 from app.features.backmarket.transport.cache import get_bm_client_for_user
-from app.features.backmarket.transport.exceptions import BMMaxRetriesError, BMRateLimited
+from app.features.backmarket.transport.exceptions import BMClientError, BMMaxRetriesError, BMRateLimited
 from app.features.backmarket.transport.http_utils import parse_cf_ray, safe_text_prefix
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ def _get_nested(d: Dict[str, Any], path: str, default: Any = None) -> Any:
 def _parse_object_id(s: str) -> ObjectId:
     try:
         return ObjectId(str(s))
-    except Exception as exc:  # noqa: BLE001
+    except (InvalidId, TypeError) as exc:
         raise ValueError(f"Invalid ObjectId: {s}") from exc
 
 
@@ -135,7 +137,7 @@ async def run_tradein_offer_update_for_group(
         try:
             await recompute_trade_pricing_for_group(db, user_id=user_id, group_id=group_id)
             group = await db[PRICING_GROUPS_COL].find_one({"_id": gid, "user_id": user_id}) or group
-        except Exception as exc:  # noqa: BLE001
+        except (BMClientError, PyMongoError, ValueError) as exc:
             logger.exception("[tradein_offers] recompute_pricing_failed group_id=%s err=%r", group_id, exc)
 
     trade_sku = str(group.get("trade_sku") or "")
@@ -163,7 +165,7 @@ async def run_tradein_offer_update_for_group(
     amount = group.get("trade_pricing", {}).get("final_update_price_gross")
     try:
         amount_gross = int(amount)
-    except Exception:
+    except (TypeError, ValueError):
         return {
             "error": "missing_final_update_price",
             "user_id": user_id,
@@ -215,7 +217,7 @@ async def run_tradein_offer_update_for_group(
             snapshot_latest=latest,
             snapshot_history=history,
         )
-    except Exception as exc:  # noqa: BLE001
+    except PyMongoError as exc:
         logger.exception("[tradein_offers] persist_offer_update_failed group_id=%s err=%r", group_id, exc)
 
     # Track hard failures.
@@ -230,7 +232,7 @@ async def run_tradein_offer_update_for_group(
                 status_code=status,
                 detail=err_prefix,
             )
-    except Exception as exc:  # noqa: BLE001
+    except PyMongoError as exc:
         logger.exception("[tradein_offers] upsert_bad_tradein_failed tradein_id=%s err=%r", tradein_id, exc)
 
     return {
@@ -314,7 +316,7 @@ async def run_tradein_offer_updates_for_user(
         amt = d.get("trade_pricing", {}).get("final_update_price_gross")
         try:
             amt_i = int(amt)
-        except Exception:
+        except (TypeError, ValueError):
             skipped_missing_price += 1
             continue
 
