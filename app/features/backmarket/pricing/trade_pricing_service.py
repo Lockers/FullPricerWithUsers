@@ -259,14 +259,14 @@ def _extract_device_key(group: Dict[str, Any]) -> Optional[Tuple[str, str, str]]
     if isinstance(brand, str) and isinstance(model, str):
         storage_norm = _normalize_storage_gb(storage_gb)
         if storage_norm:
-            return (brand.strip().upper(), model.strip().upper(), storage_norm)
+            return brand.strip().upper(), model.strip().upper(), storage_norm
 
     # Fallback: group_key is typically "BRAND|MODEL|STORAGE|TRADEIN_GRADE".
     gk = group.get("group_key")
     if isinstance(gk, str) and gk.strip() and "|" in gk:
         parts = [p.strip() for p in gk.split("|")]
         if len(parts) >= 3 and parts[0] and parts[1] and parts[2]:
-            return (parts[0].upper(), parts[1].upper(), parts[2])
+            return parts[0].upper(), parts[1].upper(), parts[2]
 
     return None
 
@@ -322,6 +322,15 @@ async def _build_sell_anchor_index_for_user(
     return out
 
 
+# Public wrapper: used by trade-in orphan pricing.
+async def build_sell_anchor_index_for_user(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+) -> Dict[Tuple[str, str, str], Dict[str, Dict[str, float]]]:
+    """Public wrapper around the internal sell anchor index builder."""
+    return await _build_sell_anchor_index_for_user(db, user_id=user_id)
+
+
 def _extract_repair_costs(group: Dict[str, Any]) -> Dict[str, Optional[float]]:
     raw_costs = _get_nested(group, "repair_costs.costs", default={})
     costs: Dict[str, Optional[float]] = {k: None for k in REPAIR_KEY_ALIASES}
@@ -360,15 +369,15 @@ def _target_sell_conditions_for_buy_condition(buy_condition: str) -> Tuple[str, 
         return ("UNKNOWN",)
 
     if buy == "GOOD":
-        return ("GOOD", "EXCELLENT")
+        return "GOOD", "EXCELLENT"
     if buy == "FAIR":
-        return ("FAIR", "EXCELLENT")
+        return "FAIR", "EXCELLENT"
     if buy == "EXCELLENT":
         return ("EXCELLENT",)
 
     # keep legacy compatibility
     if buy == "USED":
-        return ("USED", "EXCELLENT")
+        return "USED", "EXCELLENT"
     if buy == "CRACKED":
         return ("EXCELLENT",)
 
@@ -932,6 +941,21 @@ def _compute_trade_pricing_for_group_doc(
         "delta_to_competitor_net": delta_to_competitor,
         "guardrails": guardrails,
     }
+
+
+# Public wrapper: used by trade-in orphan pricing.
+def compute_trade_pricing_for_doc(
+    *,
+    group: Dict[str, Any],
+    user_settings: Dict[str, Any],
+    sell_anchor_index: Dict[Tuple[str, str, str], Dict[str, Dict[str, float]]],
+) -> Dict[str, Any]:
+    """Public wrapper around the internal group trade pricing computation."""
+    return _compute_trade_pricing_for_group_doc(
+        group=group,
+        user_settings=user_settings,
+        sell_anchor_index=sell_anchor_index,
+    )
 
 
 async def _persist_trade_pricing_computed(

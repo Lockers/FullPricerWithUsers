@@ -1053,4 +1053,13 @@ async def run_tradein_competitor_refresh_for_user(
     return out
 
 
+def hard_failure_reason_code(status: int) -> Optional[str]:
+    """Public helper to map HTTP status -> hard-failure reason_code.
+
+    Used by offers_service and other callers.
+    """
+    try:
+        return _hard_failure_reason_for_update_status(int(status))
+    except Exception:  # noqa: BLE001
+        return None
 
