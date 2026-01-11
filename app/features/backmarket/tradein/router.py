@@ -23,7 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
 from bson.errors import InvalidId
 
-from app.core.errors import BadRequestError, NotFoundError
+from app.core.errors import BadRequestError, ConflictError, NotFoundError
 from app.features.backmarket.pricing.trade_pricing_service import recompute_trade_pricing_for_group
 from app.features.backmarket.transport.exceptions import BMClientError
 
@@ -239,6 +239,7 @@ async def apply_tradein_offer_for_group(
     dry_run: bool = Query(False),
     require_ok_to_update: bool = Query(True),
     recompute: bool = Query(True),
+    scenario_key: str | None = Query(None),
 ):
     """Apply a single group's profit-safe trade-in offer to Back Market (drawer action)."""
     try:
@@ -265,11 +266,30 @@ async def apply_tradein_offer_for_group(
         market=market,
         currency=currency,
         dry_run=dry_run,
+        recompute_pricing=False,
         require_ok_to_update=require_ok_to_update,
+        scenario_key=scenario_key,
     )
 
-    if applied.get("error") == "pricing_group_not_found":
-        raise NotFoundError(code="pricing_group_not_found", message="pricing_group not found")
+    err = applied.get("error")
+    if err:
+        # Map common service-level errors to proper HTTP status codes so the UI
+        # doesn't treat failures as "success".
+        if err == "pricing_group_not_found":
+            raise NotFoundError(code="pricing_group_not_found", message="pricing_group not found")
+        if err == "scenario_not_found":
+            raise BadRequestError(
+                code="scenario_not_found",
+                message="scenario_key not found in computed scenarios",
+                details=applied,
+            )
+        if err in {"missing_tradein_id", "missing_final_update_price"}:
+            raise BadRequestError(code=str(err), message=str(err).replace("_", " "), details=applied)
+        if err == "not_ok_to_update":
+            raise ConflictError(code="not_ok_to_update", message="Not OK to update trade-in offer", details=applied)
+
+        # Fallback: treat unknown service errors as a bad request.
+        raise BadRequestError(code=str(err), message="Offer update failed", details=applied)
 
     return {
         "user_id": user_id,

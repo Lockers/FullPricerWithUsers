@@ -621,6 +621,15 @@ def _compute_trade_pricing_for_group_doc(
         or "UNKNOWN"
     )
 
+    # Optional user override: persist a scenario key on the pricing_group so the system
+    # uses that route for the *effective* update price until the user changes it.
+    trade_pricing_doc_any = group.get("trade_pricing")
+    override_scenario_key: Optional[str] = None
+    if isinstance(trade_pricing_doc_any, dict):
+        raw_override = trade_pricing_doc_any.get("override_scenario_key")
+        if isinstance(raw_override, str) and raw_override.strip():
+            override_scenario_key = raw_override.strip()
+
     device_key = _extract_device_key(group)
 
     # Group-level sell anchor (used when scenario sell condition matches this group)
@@ -630,6 +639,17 @@ def _compute_trade_pricing_for_group_doc(
 
     competitor_net = _extract_competitor_net_price_to_win(group)
     competitor_gross = _extract_competitor_gross_price_to_win(group)
+
+    # Back Market occasionally returns very small gross `price_to_win` values (e.g. £2/£3).
+    # Treat anything under £10 as equivalent to £1 ("no competitor") so we follow the same pricing path.
+    if currency == "GBP" and competitor_gross is not None:
+        try:
+            if float(competitor_gross) < 10.0:
+                competitor_gross = 1.0
+                competitor_net = _gross_to_net_tradein_gbp(1.0)
+        except (TypeError, ValueError):
+            competitor_gross = 1.0
+            competitor_net = _gross_to_net_tradein_gbp(1.0)
 
     vat_rate = _to_rate(user_settings.get("vat_rate"))
     if vat_rate is None:
@@ -806,17 +826,53 @@ def _compute_trade_pricing_for_group_doc(
                 if prev is None or float(max_buy_net) > float(prev):
                     best_strict = scenario_doc
 
-    max_trade_price_net = best_strict.get("max_trade_price_net") if best_strict else None
-    max_trade_price_gross = best_strict.get("max_trade_price_gross") if best_strict else None
+    # ------------------------------------------------------------------
+    # Determine the *effective* scenario
+    #
+    # - best_strict is the highest max_trade_price_net valid scenario
+    # - override_scenario_key (if present) forces the system to use that scenario
+    #   for final_update / ok_to_update until changed.
+    # ------------------------------------------------------------------
 
-    # Best-scenario update fields (whole £ cap + final update price).
-    max_trade_offer_gross = best_strict.get("max_trade_offer_gross") if best_strict else None
-    final_update_price_gross = best_strict.get("final_update_price_gross") if best_strict else None
-    final_update_price_net = best_strict.get("final_update_price_net") if best_strict else None
-    final_update_reason = best_strict.get("final_update_reason") if best_strict else None
-    profit_at_final_update = best_strict.get("profit_at_final_update") if best_strict else None
-    margin_at_final_update = best_strict.get("margin_at_final_update") if best_strict else None
-    vat_at_final_update = best_strict.get("vat_at_final_update") if best_strict else None
+    best_scenario_key = best_strict.get("key") if best_strict else None
+
+    override_scenario: Optional[Dict[str, Any]] = None
+    if override_scenario_key:
+        for s in scenario_docs:
+            if isinstance(s, dict) and s.get("key") == override_scenario_key:
+                override_scenario = s
+                break
+
+    effective: Optional[Dict[str, Any]]
+    effective_scenario_key: Optional[str]
+    effective_source: str
+
+    if override_scenario_key:
+        # If an override is present but we can't find it in the recomputed scenarios,
+        # treat the group as not OK to update (safer than silently falling back to best).
+        if override_scenario is None:
+            effective = None
+            effective_scenario_key = override_scenario_key
+            effective_source = "override_missing"
+        else:
+            effective = override_scenario
+            effective_scenario_key = override_scenario_key
+            effective_source = "override"
+    else:
+        effective = best_strict
+        effective_scenario_key = best_scenario_key
+        effective_source = "best"
+
+    # Effective update fields (whole £ cap + final update price).
+    max_trade_price_net = effective.get("max_trade_price_net") if effective else None
+    max_trade_price_gross = effective.get("max_trade_price_gross") if effective else None
+    max_trade_offer_gross = effective.get("max_trade_offer_gross") if effective else None
+    final_update_price_gross = effective.get("final_update_price_gross") if effective else None
+    final_update_price_net = effective.get("final_update_price_net") if effective else None
+    final_update_reason = effective.get("final_update_reason") if effective else None
+    profit_at_final_update = effective.get("profit_at_final_update") if effective else None
+    margin_at_final_update = effective.get("margin_at_final_update") if effective else None
+    vat_at_final_update = effective.get("vat_at_final_update") if effective else None
 
     competitor_within_strict: Optional[bool] = None
     delta_to_competitor: Optional[float] = None
@@ -824,10 +880,10 @@ def _compute_trade_pricing_for_group_doc(
         competitor_within_strict = bool(float(competitor_net) <= float(max_trade_price_net))
         delta_to_competitor = _round2(float(max_trade_price_net) - float(competitor_net))
 
-    best_route = (best_strict.get("route") if best_strict else None) or f"{buy_condition}->{group_sell_condition}"
-    best_sell_condition = (
-        best_route.split("->", 1)[1].strip().upper()
-        if isinstance(best_route, str) and "->" in best_route
+    effective_route = (effective.get("route") if effective else None) or f"{buy_condition}->{group_sell_condition}"
+    effective_sell_condition = (
+        effective_route.split("->", 1)[1].strip().upper()
+        if isinstance(effective_route, str) and "->" in effective_route
         else group_sell_condition
     )
 
@@ -853,8 +909,16 @@ def _compute_trade_pricing_for_group_doc(
     if currency != "GBP":
         not_ok_reasons.append("unsupported_currency")
 
-    if best_strict is None:
-        not_ok_reasons.append("no_valid_scenarios")
+    if effective is None:
+        if override_scenario_key and override_scenario is None:
+            not_ok_reasons.append("override_scenario_not_found")
+        else:
+            not_ok_reasons.append("no_valid_scenarios")
+
+    # If an override is present but the chosen scenario isn't valid, explicitly block updates.
+    if effective is not None and override_scenario_key:
+        if not bool(effective.get("valid")):
+            not_ok_reasons.append("override_scenario_not_valid")
 
     if final_update_reason == "max_trade_below_min_price":
         not_ok_reasons.append("max_trade_below_min_price")
@@ -897,8 +961,8 @@ def _compute_trade_pricing_for_group_doc(
         "trade_sku": trade_sku,
         "group_id": str(group.get("_id")) if group.get("_id") else None,
         "buy_condition": buy_condition,
-        "sell_condition": best_sell_condition,
-        "route": best_route,
+        "sell_condition": effective_sell_condition,
+        "route": effective_route,
         "currency": currency,
         "requirements": {
             "required_profit": _round2(required_profit),
@@ -924,7 +988,10 @@ def _compute_trade_pricing_for_group_doc(
             "repair_costs": repair_costs,
         },
         "scenarios": scenario_docs,
-        "best_scenario_key": best_strict.get("key") if best_strict else None,
+        "best_scenario_key": best_scenario_key,
+        "override_scenario_key": override_scenario_key,
+        "effective_scenario_key": effective_scenario_key,
+        "effective_scenario_source": effective_source,
         "max_trade_price_net": max_trade_price_net,
         "max_trade_price_gross": max_trade_price_gross,
         "max_trade_offer_gross": max_trade_offer_gross,

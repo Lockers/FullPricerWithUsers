@@ -39,6 +39,61 @@ logger = logging.getLogger(__name__)
 PRICING_GROUPS_COL = "pricing_groups"
 
 
+async def _persist_scenario_override(
+    db: AsyncIOMotorDatabase,
+    *,
+    user_id: str,
+    group_object_id: ObjectId,
+    scenario_key: str,
+    scenario_doc: Optional[Dict[str, Any]],
+) -> None:
+    """Persist the user's chosen scenario key onto the pricing_group.
+
+    We store the key so future bulk runs (apply-all / price-all) use the same
+    scenario until changed.
+
+    Best-effort: DB failures shouldn't block the BM update.
+    """
+
+    now = _now_utc()
+    set_doc: Dict[str, Any] = {
+        "trade_pricing.override_scenario_key": scenario_key,
+        "trade_pricing.override_updated_at": now,
+        "updated_at": now,
+    }
+
+    # Keep convenience fields in sync so bulk workers relying on
+    # trade_pricing.final_update_price_gross behave as expected.
+    if isinstance(scenario_doc, dict):
+        for k in (
+            "max_trade_price_net",
+            "max_trade_price_gross",
+            "max_trade_offer_gross",
+            "final_update_price_gross",
+            "final_update_price_net",
+            "final_update_reason",
+            "profit_at_final_update",
+            "margin_at_final_update",
+            "vat_at_final_update",
+            "valid",
+        ):
+            if scenario_doc.get(k) is not None:
+                set_doc[f"trade_pricing.{k}"] = scenario_doc.get(k)
+
+    try:
+        await db[PRICING_GROUPS_COL].update_one(
+            {"_id": group_object_id, "user_id": user_id},
+            {"$set": set_doc},
+        )
+    except PyMongoError as exc:
+        logger.exception(
+            "[tradein_offers] persist_override_failed group_id=%s scenario_key=%s err=%r",
+            str(group_object_id),
+            scenario_key,
+            exc,
+        )
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -123,8 +178,15 @@ async def run_tradein_offer_update_for_group(
     dry_run: bool = True,
     recompute_pricing: bool = True,
     require_ok_to_update: bool = True,
+    scenario_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Apply a single pricing_group.trade_pricing.final_update_price_gross to BM."""
+    """Apply a single group's trade-in offer to Back Market.
+
+    Default behaviour uses the persisted "best" scenario values.
+
+    If scenario_key is provided, we use the matching scenario from
+    trade_pricing.computed.scenarios (so the UI can force a specific route).
+    """
 
     gid = _parse_object_id(group_id)
 
@@ -151,20 +213,162 @@ async def run_tradein_offer_update_for_group(
             "trade_sku": trade_sku,
         }
 
-    ok_to_update = bool(group.get("trade_pricing", {}).get("ok_to_update"))
-    if require_ok_to_update and not ok_to_update:
+    scenario_key_requested: Optional[str] = None
+    if isinstance(scenario_key, str) and scenario_key.strip():
+        scenario_key_requested = scenario_key.strip()
+
+    trade_pricing_doc = group.get("trade_pricing")
+    if not isinstance(trade_pricing_doc, dict):
+        trade_pricing_doc = {}
+
+    computed = trade_pricing_doc.get("computed")
+    if not isinstance(computed, dict):
+        computed = {}
+
+    scenario_docs = computed.get("scenarios") if isinstance(computed.get("scenarios"), list) else None
+
+    # Persisted per-group override so bulk runs keep using the same route.
+    override_key: Optional[str] = None
+    raw_override = trade_pricing_doc.get("override_scenario_key")
+    if isinstance(raw_override, str) and raw_override.strip():
+        override_key = raw_override.strip()
+
+    scenario_used: Optional[Dict[str, Any]] = None
+    scenario_used_key: Optional[str] = None
+    scenario_selection_source = "best"
+
+    if scenario_key_requested:
+        scenario_used_key = scenario_key_requested
+        scenario_selection_source = "requested"
+    elif override_key:
+        scenario_used_key = override_key
+        scenario_selection_source = "override"
+    else:
+        scenario_used_key = trade_pricing_doc.get("best_scenario_key") or computed.get("best_scenario_key")
+        scenario_selection_source = "best"
+
+    if scenario_used_key and isinstance(scenario_docs, list):
+        for s in scenario_docs:
+            if isinstance(s, dict) and s.get("key") == scenario_used_key:
+                scenario_used = s
+                break
+
+    # If the user requested a scenario and we can see scenarios but it doesn't exist, hard error.
+    if scenario_key_requested and scenario_used is None and isinstance(scenario_docs, list):
         return {
-            "error": "not_ok_to_update",
+            "error": "scenario_not_found",
             "user_id": user_id,
             "group_id": group_id,
             "trade_sku": trade_sku,
             "tradein_id": tradein_id,
-            "not_ok_reasons": group.get("trade_pricing", {}).get("not_ok_reasons") or [],
+            "scenario_key": scenario_key_requested,
         }
 
-    amount = group.get("trade_pricing", {}).get("final_update_price_gross")
+    # If an override is set but isn't present in the latest computed scenarios, block updates
+    # rather than silently reverting to best.
+    if (not scenario_key_requested) and override_key and scenario_used is None and isinstance(scenario_docs, list):
+        return {
+            "error": "scenario_override_not_found",
+            "user_id": user_id,
+            "group_id": group_id,
+            "trade_sku": trade_sku,
+            "tradein_id": tradein_id,
+            "scenario_key": override_key,
+        }
+
+    # If the UI explicitly chose a scenario, persist it so future bulk runs use it.
+    # Persist even on dry_run; this is a *selection* not a BM-side effect.
+    if scenario_key_requested and (scenario_used is not None or not isinstance(scenario_docs, list)):
+        await _persist_scenario_override(
+            db,
+            user_id=user_id,
+            group_object_id=gid,
+            scenario_key=scenario_key_requested,
+            scenario_doc=scenario_used,
+        )
+        override_key = scenario_key_requested
+
+    def _to_float(x: Any) -> Optional[float]:
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    # Enforce ok_to_update.
+    # - If we are using a specific scenario (requested or override) and we have
+    #   the scenario row, validate THAT scenario.
+    # - Otherwise, fall back to the persisted group-level ok_to_update flag.
+    validate_scenario = bool((scenario_key_requested or override_key) and isinstance(scenario_used, dict))
+
+    if require_ok_to_update:
+        if validate_scenario:
+            not_ok_reasons: List[str] = []
+
+            tp_currency = str(computed.get("currency") or trade_pricing_doc.get("currency") or currency).upper().strip()
+            if tp_currency != "GBP":
+                not_ok_reasons.append("unsupported_currency")
+
+            if not (isinstance(scenario_used, dict) and bool(scenario_used.get("valid"))):
+                not_ok_reasons.append("scenario_not_valid")
+
+            final_reason = scenario_used.get("final_update_reason") if isinstance(scenario_used, dict) else None
+            if final_reason == "max_trade_below_min_price":
+                not_ok_reasons.append("max_trade_below_min_price")
+
+            f_gross = _to_float(scenario_used.get("final_update_price_gross") if isinstance(scenario_used, dict) else None)
+            f_cap = _to_float(scenario_used.get("max_trade_offer_gross") if isinstance(scenario_used, dict) else None)
+            f_profit = _to_float(scenario_used.get("profit_at_final_update") if isinstance(scenario_used, dict) else None)
+
+            if f_gross is None:
+                not_ok_reasons.append("missing_final_update_price_gross")
+            elif f_gross < 1.0:
+                not_ok_reasons.append("final_update_below_min_price")
+
+            if f_cap is None:
+                not_ok_reasons.append("missing_max_trade_offer_gross")
+
+            if f_gross is not None and f_cap is not None and f_gross > f_cap + 1e-9:
+                not_ok_reasons.append("final_update_exceeds_max_trade_offer")
+
+            required_profit = _to_float(_get_nested(group, "trade_pricing.computed.requirements.required_profit"))
+            if required_profit is not None:
+                if f_profit is None:
+                    not_ok_reasons.append("missing_profit_at_final_update")
+                elif f_profit < required_profit - 0.01:
+                    not_ok_reasons.append("profit_below_required")
+
+            if not_ok_reasons:
+                return {
+                    "error": "not_ok_to_update",
+                    "user_id": user_id,
+                    "group_id": group_id,
+                    "trade_sku": trade_sku,
+                    "tradein_id": tradein_id,
+                    "scenario_key": scenario_used_key,
+                    "scenario_selection_source": scenario_selection_source,
+                    "not_ok_reasons": not_ok_reasons,
+                }
+        else:
+            ok_to_update = bool(trade_pricing_doc.get("ok_to_update"))
+            if not ok_to_update:
+                return {
+                    "error": "not_ok_to_update",
+                    "user_id": user_id,
+                    "group_id": group_id,
+                    "trade_sku": trade_sku,
+                    "tradein_id": tradein_id,
+                    "not_ok_reasons": trade_pricing_doc.get("not_ok_reasons") or [],
+                }
+
+    if isinstance(scenario_used, dict) and scenario_used.get("final_update_price_gross") is not None:
+        amount_obj: Any = scenario_used.get("final_update_price_gross")
+        amount_source = "scenario"
+    else:
+        amount_obj = trade_pricing_doc.get("final_update_price_gross")
+        amount_source = "best"
+
     try:
-        amount_gross = int(amount)
+        amount_gross = int(amount_obj)
     except (TypeError, ValueError):
         return {
             "error": "missing_final_update_price",
@@ -172,6 +376,7 @@ async def run_tradein_offer_update_for_group(
             "group_id": group_id,
             "trade_sku": trade_sku,
             "tradein_id": tradein_id,
+            "scenario_key": scenario_used_key,
         }
 
     sent_at = _now_utc()
@@ -186,10 +391,20 @@ async def run_tradein_offer_update_for_group(
     )
 
     # Persist update snapshot (best-effort).
-    # Persist update snapshot (best-effort).
     try:
         mkt = str(market).upper().strip() or DEFAULT_MARKET
         cur = str(currency).upper().strip() or DEFAULT_CURRENCY
+
+        used_reason = (
+            scenario_used.get("final_update_reason")
+            if isinstance(scenario_used, dict)
+            else trade_pricing_doc.get("final_update_reason")
+        )
+        used_profit = (
+            scenario_used.get("profit_at_final_update")
+            if isinstance(scenario_used, dict)
+            else trade_pricing_doc.get("profit_at_final_update")
+        )
 
         latest = {
             "market": mkt,
@@ -202,12 +417,14 @@ async def run_tradein_offer_update_for_group(
             "sent_at": sent_at,
             "dry_run": bool(dry_run),
             "computed_at": _get_nested(group, "trade_pricing.computed.computed_at"),
-            "best_scenario_key": group.get("trade_pricing", {}).get("best_scenario_key"),
-            "final_update_reason": group.get("trade_pricing", {}).get("final_update_reason"),
-            "profit_at_final_update": group.get("trade_pricing", {}).get("profit_at_final_update"),
+            "best_scenario_key": trade_pricing_doc.get("best_scenario_key"),
+            "scenario_key_requested": scenario_key_requested,
+            "scenario_key_used": scenario_used_key,
+            "final_update_reason": used_reason,
+            "profit_at_final_update": used_profit,
+            "amount_source": amount_source,
         }
 
-        # Keep history the same shape as latest for now (makes auditing simpler).
         history = dict(latest)
 
         await persist_tradein_offer_update(
@@ -243,6 +460,10 @@ async def run_tradein_offer_update_for_group(
         "market": str(market).upper().strip() or DEFAULT_MARKET,
         "currency": str(currency).upper().strip() or DEFAULT_CURRENCY,
         "amount": amount_gross,
+        "amount_source": amount_source,
+        "scenario_key_requested": scenario_key_requested,
+        "scenario_key_used": scenario_used_key,
+        "best_scenario_key": trade_pricing_doc.get("best_scenario_key") if isinstance(trade_pricing_doc, dict) else None,
         "ok": bool(ok),
         "status": int(status),
         "cf_ray": cf_ray,
