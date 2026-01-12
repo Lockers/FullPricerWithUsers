@@ -8,6 +8,7 @@ from starlette.middleware.cors import CORSMiddleware
 from app.core.config import config
 from app.core.errors import register_exception_handlers
 from app.core.logging import init_logging
+from app.core.auto_price_all import start_auto_price_all, stop_auto_price_all
 from app.db.mongo import mongo_lifespan
 from app.features.backmarket.pricing_groups.router import router as pricing_groups_router
 from app.features.backmarket.sell.router import router as bm_router
@@ -32,9 +33,13 @@ init_logging(
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     async with mongo_lifespan(application):
+        # Optional background scheduler (disabled by default).
+        # Enable with: AUTO_PRICE_ALL_ENABLED=true
+        start_auto_price_all(application)
         try:
             yield
         finally:
+            await stop_auto_price_all(application)
             await shutdown_bm_clients()
 
 

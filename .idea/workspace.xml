@@ -4,12 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="nEARLY FINAL, NEED TO TEST">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/core/errors.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/core/errors.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/pricing/trade_pricing_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/offers_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/offers_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/tradein/router.py" afterDir="false" />
+    <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="Version 0.9">
+      <change beforePath="$PROJECT_DIR$/.env" beforeDir="false" afterPath="$PROJECT_DIR$/.env" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -158,7 +155,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767888625724</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="Version 0.9">
+      <option name="closed" value="true" />
+      <created>1768163448034</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1768163448034</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -181,6 +186,7 @@
     <MESSAGE value="third commit, 1st version done, now looking for bugs and refactor possibilities" />
     <MESSAGE value="BIg commit, changes, db purge and refactoring" />
     <MESSAGE value="nEARLY FINAL, NEED TO TEST" />
-    <option name="LAST_COMMIT_MESSAGE" value="nEARLY FINAL, NEED TO TEST" />
+    <MESSAGE value="Version 0.9" />
+    <option name="LAST_COMMIT_MESSAGE" value="Version 0.9" />
   </component>
 </project>
