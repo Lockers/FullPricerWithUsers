@@ -120,7 +120,6 @@ class BackMarketClient:
             # httpx has changed proxy kwargs across versions.
             proxies = {
                 "http://": proxy_url,
-                "https://": proxy_url,
             }
             client_kwargs["proxies"] = proxies
 

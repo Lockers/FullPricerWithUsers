@@ -13,6 +13,7 @@ from app.db.mongo import mongo_lifespan
 from app.features.backmarket.pricing_groups.router import router as pricing_groups_router
 from app.features.backmarket.sell.router import router as bm_router
 from app.features.backmarket.tradein.router import router as tradein_router
+from app.features.backmarket.tradein_orphans.router import router as tradein_orphans_router
 from app.features.backmarket.transport.cache import shutdown_bm_clients
 from app.features.users.router import router as users_router
 from app.features.repaircost.router import router as repaircost_router
@@ -57,6 +58,7 @@ app.add_middleware(
 app.include_router(users_router)
 app.include_router(bm_router)
 app.include_router(tradein_router)
+app.include_router(tradein_orphans_router)
 app.include_router(pricing_groups_router)
 
 app.include_router(repaircost_router)

@@ -58,7 +58,7 @@ class AppConfig(BaseModel):
     # -----------------------------
     # If you have a proxy service, set:
     #   PROXY_URL=http://user:pass@host:port
-    proxy_url: str | None = os.getenv("PROXY_URL")
+    proxy_url: str | None = os.getenv("RES_PROXY_URL")
 
     # -----------------------------
     # Back Market API settings

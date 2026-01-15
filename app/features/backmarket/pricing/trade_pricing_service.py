@@ -761,7 +761,7 @@ def _compute_trade_pricing_for_group_doc(
                     max_trade_offer_gross = cap
 
                     # price_to_win is the price required to win; BM returns £1 when no competitor.
-                    if competitor_gross is None or float(competitor_gross) <= 1.01:
+                    if competitor_gross is None or float(competitor_gross) <= 20.01:
                         final_update_price_gross = cap
                         final_update_reason = "no_competitor"
                     else:
