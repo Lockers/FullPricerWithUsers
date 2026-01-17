@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -57,11 +57,194 @@ def _oid_str(oid: Any) -> str:
         return "unknown"
 
 
+def _u(v: Any) -> str:
+    """Uppercase + strip; always returns a string."""
+    return str(v or "").strip().upper()
+
+
+def _parse_dt_best_effort(v: Any, *, default: Optional[datetime] = None) -> datetime:
+    """
+    Parse a datetime from common BM formats.
+    Accepts ISO strings with 'Z' and datetime objects. Falls back to default/now.
+    """
+    if default is None:
+        default = _now_dt()
+
+    if isinstance(v, datetime):
+        return v
+
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return default
+
+    return default
+
+
+def _scope_or_default(scope: Optional[MultiplierScope]) -> MultiplierScope:
+    return scope if scope is not None else MultiplierScope.SKU
+
+
+def _try_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _require_float(v: Any, *, field: str) -> float:
+    f = _try_float(v)
+    if f is None:
+        raise HTTPException(status_code=422, detail=f"Missing or invalid {field}")
+    return f
+
+
+def _extract_listing_sku(d: Dict[str, Any]) -> str:
+    # tolerate slightly different field names
+    sku = d.get("listing") or d.get("listing_sku") or d.get("listingSku") or ""
+    return str(sku or "").strip()
+
+
+def _extract_price(d: Dict[str, Any]) -> Optional[float]:
+    # BM payload uses `price` on orderline; your bridge sometimes uses `unit_price`
+    raw = d.get("price")
+    if raw is None:
+        raw = d.get("unit_price")
+    return _try_float(raw)
+
+
+def _extract_observed_dt(d: Dict[str, Any], *, fallback: datetime) -> datetime:
+    dt = d.get("date_creation") or d.get("date_payment") or d.get("created_at")
+    return _parse_dt_best_effort(dt, default=fallback)
+
+
+def _iter_orderlines(v: Any) -> Iterable[Dict[str, Any]]:
+    """
+    Docs say `orderlines` can be:
+      - list[dict]
+      - dict keyed by SKU (value is dict)
+    Normalize to yielding dicts; for dict form, inject listing=sku_key if missing.
+    """
+    if isinstance(v, list):
+        for x in v:
+            if isinstance(x, dict):
+                yield x
+        return
+
+    if isinstance(v, dict):
+        for sku_key, val in v.items():
+            if not isinstance(val, dict):
+                continue
+            d = dict(val)
+            d.setdefault("listing", sku_key)
+            yield d
+        return
+
+    return
+
+
+def _segment_from_doc_value(seg_val: Any, *, fallback: Segment) -> Segment:
+    """Turn unknown/Any segment values into a Segment enum safely."""
+    if seg_val is None:
+        return fallback
+    try:
+        return Segment(str(seg_val))
+    except (ValueError, TypeError):
+        return fallback
+
+
+async def _require_dep_doc(
+    *,
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    market: str,
+    brand: str,
+    model: str,
+    storage_gb: int,
+) -> Dict[str, Any]:
+    dep_doc = await get_depreciation_model(
+        db,
+        user_id=user_id,
+        market=market,
+        brand=brand,
+        model=model,
+        storage_gb=storage_gb,
+    )
+    if not dep_doc:
+        raise HTTPException(
+            status_code=422,
+            detail="Missing depreciation model data (release_date/msrp). Upsert it via PUT /depreciation/models.",
+        )
+    return dep_doc
+
+
+async def _resolve_dep_inputs(
+    *,
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    market: str,
+    brand: str,
+    model: str,
+    storage_gb: int,
+    release_date: Optional[date],
+    msrp_amount: Optional[float],
+    currency_hint: str = "GBP",
+    segment: Optional[Segment],
+) -> Tuple[date, float, str, Segment]:
+    """
+    Resolve (release_date, msrp_amount, currency, segment) from request values
+    and/or stored depreciation model.
+    """
+    dep_doc: Optional[Dict[str, Any]] = None
+    if release_date is None or msrp_amount is None or segment is None:
+        dep_doc = await get_depreciation_model(
+            db,
+            user_id=user_id,
+            market=market,
+            brand=brand,
+            model=model,
+            storage_gb=storage_gb,
+        )
+
+    if release_date is None:
+        if not dep_doc:
+            dep_doc = await _require_dep_doc(
+                db=db, user_id=user_id, market=market, brand=brand, model=model, storage_gb=storage_gb
+            )
+        rd = dep_doc.get("release_date")
+        if isinstance(rd, datetime):
+            release_date = rd.date()
+        elif isinstance(rd, date):
+            release_date = rd
+        else:
+            raise HTTPException(status_code=422, detail="Missing or invalid release_date in depreciation model")
+
+    if msrp_amount is None:
+        if not dep_doc:
+            dep_doc = await _require_dep_doc(
+                db=db, user_id=user_id, market=market, brand=brand, model=model, storage_gb=storage_gb
+            )
+        msrp_amount = _require_float(dep_doc.get("msrp_amount"), field="msrp_amount")
+
+    currency = currency_hint
+    if dep_doc and dep_doc.get("currency"):
+        currency = str(dep_doc.get("currency") or currency)
+
+    if segment is None:
+        fallback_seg = derive_segment(brand, model)
+        segment = _segment_from_doc_value(dep_doc.get("segment") if dep_doc else None, fallback=fallback_seg)
+
+    return release_date, msrp_amount, currency, segment
+
+
 @router.put("/models", response_model=DepreciationModelResponse)
 async def upsert_model(req: DepreciationModelUpsertRequest, db: AsyncIOMotorDatabase = Depends(get_db)):
-    brand = req.brand.strip().upper()
-    model = req.model.strip().upper()
-    market = req.market.strip().upper()
+    brand = _u(req.brand)
+    model = _u(req.model)
+    market = _u(req.market)
 
     seg = req.segment or derive_segment(brand, model)
 
@@ -74,63 +257,46 @@ async def upsert_model(req: DepreciationModelUpsertRequest, db: AsyncIOMotorData
         storage_gb=req.storage_gb,
         release_date=req.release_date,
         msrp_amount=req.msrp_amount,
-        currency=req.currency,
-        segment=seg.value,
+        currency=str(req.currency),
+        segment=str(seg.value),
     )
     if not doc:
         raise HTTPException(status_code=500, detail="Failed to upsert depreciation model")
 
+    seg_out = _segment_from_doc_value(doc.get("segment"), fallback=seg)
+
     return DepreciationModelResponse(
         id=_oid_str(doc.get("_id")),
-        user_id=doc["user_id"],
-        market=doc["market"],
-        brand=doc["brand"],
-        model=doc["model"],
+        user_id=str(doc["user_id"]),
+        market=str(doc["market"]),
+        brand=str(doc["brand"]),
+        model=str(doc["model"]),
         storage_gb=int(doc["storage_gb"]),
         release_date=doc["release_date"],
         msrp_amount=float(doc["msrp_amount"]),
-        currency=doc.get("currency", "GBP"),
-        segment=Segment(doc.get("segment", seg.value)),
+        currency=str(doc.get("currency", "GBP")),
+        segment=seg_out,
     )
 
 
 @router.post("/estimate", response_model=DepreciationEstimateResponse)
 async def estimate(req: DepreciationEstimateRequest, db: AsyncIOMotorDatabase = Depends(get_db)):
-    market = req.market.strip().upper()
-    brand = req.brand.strip().upper()
-    model = req.model.strip().upper()
+    market = _u(req.market)
+    brand = _u(req.brand)
+    model = _u(req.model)
 
-    release_date = req.release_date
-    msrp_amount = req.msrp_amount
-    currency = "GBP"
-
-    dep_doc = None
-    if release_date is None or msrp_amount is None or req.segment is None:
-        dep_doc = await get_depreciation_model(
-            db,
-            user_id=req.user_id,
-            market=market,
-            brand=brand,
-            model=model,
-            storage_gb=req.storage_gb,
-        )
-
-    if release_date is None or msrp_amount is None:
-        if not dep_doc:
-            raise HTTPException(
-                status_code=422,
-                detail="Missing depreciation model data (release_date/msrp). Upsert it via PUT /depreciation/models.",
-            )
-        release_date = release_date or dep_doc["release_date"]
-        msrp_amount = msrp_amount or float(dep_doc["msrp_amount"])
-        currency = dep_doc.get("currency", currency)
-
-    seg = req.segment
-    if seg is None:
-        if dep_doc and dep_doc.get("segment"):
-            seg = Segment(dep_doc["segment"])
-        else:
-            seg = derive_segment(brand, model)
+    release_date, msrp_amount, currency, seg = await _resolve_dep_inputs(
+        db=db,
+        user_id=req.user_id,
+        market=market,
+        brand=brand,
+        model=model,
+        storage_gb=req.storage_gb,
+        release_date=req.release_date,
+        msrp_amount=req.msrp_amount,
+        currency_hint="GBP",
+        segment=req.segment,
+    )
 
     as_of = req.as_of_date or date.today()
     age_m = months_since(release_date, as_of)
@@ -138,14 +304,19 @@ async def estimate(req: DepreciationEstimateRequest, db: AsyncIOMotorDatabase = 
     curve = SEED_CURVES_EXCELLENT[seg]
     ret_ex = retention_at(age_m, curve)
 
-    keys = build_multiplier_keys(market=market, brand=brand, model=model, storage_gb=req.storage_gb, segment=seg.value)
+    keys = build_multiplier_keys(
+        market=market,
+        brand=brand,
+        model=model,
+        storage_gb=req.storage_gb,
+        segment=str(seg.value),
+    )
     mult, mult_source = await resolve_multiplier(db, user_id=req.user_id, market=market, keys=keys)
 
     base_excellent = float(msrp_amount) * ret_ex
     pred_ex = base_excellent * mult
     pred_good = pred_ex * float(GRADE_MULTIPLIERS[Grade.GOOD])
     pred_fair = pred_ex * float(GRADE_MULTIPLIERS[Grade.FAIR])
-
     pred_for_grade = pred_ex * grade_multiplier(req.grade)
 
     pred_ex_r = round_gbp(pred_ex)
@@ -198,13 +369,16 @@ async def compute_for_pricing_group(
         raise HTTPException(status_code=403, detail="pricing_group does not belong to user_id")
 
     user_id = pg.get("user_id")
-    trade_sku = pg.get("trade_sku", "")
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=422, detail="pricing_group missing user_id")
+
+    trade_sku = str(pg.get("trade_sku", "") or "")
 
     market = (pg.get("markets") or ["GB"])[0]
-    market = str(market).upper()
+    market = _u(market)
 
-    brand = str(pg.get("brand", "")).upper().strip()
-    model = str(pg.get("model", "")).upper().strip()
+    brand = _u(pg.get("brand", ""))
+    model = _u(pg.get("model", ""))
     storage_gb = int(pg.get("storage_gb") or 0)
 
     if (not brand or not model or not storage_gb) and trade_sku:
@@ -214,32 +388,39 @@ async def compute_for_pricing_group(
         storage_gb = storage_gb or sg
 
     if not brand or not model or not storage_gb:
-        raise HTTPException(status_code=422, detail="pricing_group missing brand/model/storage_gb and trade_sku not parseable")
+        raise HTTPException(
+            status_code=422,
+            detail="pricing_group missing brand/model/storage_gb and trade_sku not parseable",
+        )
 
     target_condition = pg.get("target_sell_condition") or pg.get("trade_sku_condition") or ""
     target_grade = normalize_grade(str(target_condition), default=Grade.GOOD)
 
-    dep = await get_depreciation_model(
-        db, user_id=user_id, market=market, brand=brand, model=model, storage_gb=storage_gb
+    release_date, msrp_amount, currency, seg = await _resolve_dep_inputs(
+        db=db,
+        user_id=user_id,
+        market=market,
+        brand=brand,
+        model=model,
+        storage_gb=storage_gb,
+        release_date=None,
+        msrp_amount=None,
+        currency_hint="GBP",
+        segment=None,
     )
-    if not dep:
-        raise HTTPException(
-            status_code=422,
-            detail="Missing depreciation model data (release_date/msrp). Upsert it via PUT /depreciation/models.",
-        )
-
-    release_date = dep["release_date"]
-    msrp_amount = float(dep["msrp_amount"])
-    currency = dep.get("currency", "GBP")
-
-    seg = Segment(dep.get("segment")) if dep.get("segment") else derive_segment(brand, model)
 
     as_of = req.as_of_date or date.today()
     age_m = months_since(release_date, as_of)
     curve = SEED_CURVES_EXCELLENT[seg]
     ret_ex = retention_at(age_m, curve)
 
-    keys = build_multiplier_keys(market=market, brand=brand, model=model, storage_gb=storage_gb, segment=seg.value)
+    keys = build_multiplier_keys(
+        market=market,
+        brand=brand,
+        model=model,
+        storage_gb=storage_gb,
+        segment=str(seg.value),
+    )
     mult, mult_source = await resolve_multiplier(db, user_id=user_id, market=market, keys=keys)
 
     base_excellent = msrp_amount * ret_ex
@@ -248,7 +429,7 @@ async def compute_for_pricing_group(
     pred_fair = pred_ex * float(GRADE_MULTIPLIERS[Grade.FAIR])
     pred_target = pred_ex * grade_multiplier(target_grade)
 
-    estimate = DepreciationEstimateResponse(
+    dep_estimate = DepreciationEstimateResponse(
         market=market,
         brand=brand,
         model=model,
@@ -285,15 +466,15 @@ async def compute_for_pricing_group(
             "msrp_amount": msrp_amount,
             "currency": currency,
             "as_of_date": as_of,
-            "age_months": estimate.age_months,
+            "age_months": dep_estimate.age_months,
             "curve_version": CURVE_VERSION,
-            "retention_excellent": estimate.retention_excellent,
-            "multiplier": estimate.multiplier,
-            "multiplier_source": estimate.multiplier_source,
-            "predicted_excellent": estimate.predicted_excellent,
-            "predicted_good": estimate.predicted_good,
-            "predicted_fair": estimate.predicted_fair,
-            "predicted_target": estimate.predicted_for_grade,
+            "retention_excellent": dep_estimate.retention_excellent,
+            "multiplier": dep_estimate.multiplier,
+            "multiplier_source": dep_estimate.multiplier_source,
+            "predicted_excellent": dep_estimate.predicted_excellent,
+            "predicted_good": dep_estimate.predicted_good,
+            "predicted_fair": dep_estimate.predicted_fair,
+            "predicted_target": dep_estimate.predicted_for_grade,
             "computed_at": _now_dt(),
         }
         await db["pricing_groups"].update_one({"_id": oid}, {"$set": {stored_field: payload}})
@@ -306,36 +487,39 @@ async def compute_for_pricing_group(
         market=market,
         stored_field=stored_field,
         persisted=persisted,
-        estimate=estimate,
+        estimate=dep_estimate,
     )
 
 
 @router.post("/observe", response_model=DepreciationObserveResponse)
 async def observe(req: DepreciationObserveRequest, db: AsyncIOMotorDatabase = Depends(get_db)):
-    market = req.market.strip().upper()
+    market = _u(req.market)
 
     if req.sku:
-        brand, model, storage_gb, parsed_grade = parse_sku(req.sku)
+        brand, model, storage_gb, parsed_grade = parse_sku(str(req.sku))
         grade = req.grade or parsed_grade
     else:
         if not (req.brand and req.model and req.storage_gb):
             raise HTTPException(status_code=422, detail="Provide either sku or brand+model+storage_gb")
-        brand = req.brand.strip().upper()
-        model = req.model.strip().upper()
+        brand = _u(req.brand)
+        model = _u(req.model)
         storage_gb = int(req.storage_gb)
         grade = req.grade
 
-    dep = await get_depreciation_model(
-        db, user_id=req.user_id, market=market, brand=brand, model=model, storage_gb=storage_gb
+    dep_doc = await _require_dep_doc(
+        db=db, user_id=req.user_id, market=market, brand=brand, model=model, storage_gb=storage_gb
     )
-    if not dep:
-        raise HTTPException(
-            status_code=422,
-            detail="Missing depreciation model data (release_date/msrp). Upsert it via PUT /depreciation/models.",
-        )
-    release_date = dep["release_date"]
-    msrp_amount = float(dep["msrp_amount"])
-    seg = Segment(dep.get("segment")) if dep.get("segment") else derive_segment(brand, model)
+
+    release_date_raw = dep_doc.get("release_date")
+    if isinstance(release_date_raw, datetime):
+        release_date = release_date_raw.date()
+    elif isinstance(release_date_raw, date):
+        release_date = release_date_raw
+    else:
+        raise HTTPException(status_code=422, detail="Missing or invalid release_date in depreciation model")
+
+    msrp_amount = _require_float(dep_doc.get("msrp_amount"), field="msrp_amount")
+    seg = _segment_from_doc_value(dep_doc.get("segment"), fallback=derive_segment(brand, model))
 
     observed_at = req.observed_at or date.today()
     age_m = months_since(release_date, observed_at)
@@ -346,7 +530,8 @@ async def observe(req: DepreciationObserveRequest, db: AsyncIOMotorDatabase = De
     observed_excellent_equiv = float(req.observed_price) / max(grade_multiplier(grade), 1e-9)
     target_multiplier = observed_excellent_equiv / max(base_pred_ex, 1e-9)
 
-    scope = req.scope or MultiplierScope.SKU
+    scope = _scope_or_default(req.scope)
+
     if scope == MultiplierScope.SKU:
         key = f"sku:{market}:{brand}|{model}|{storage_gb}"
     elif scope == MultiplierScope.MODEL:
@@ -380,6 +565,50 @@ async def observe(req: DepreciationObserveRequest, db: AsyncIOMotorDatabase = De
     )
 
 
+async def _observe_from_line(
+    *,
+    user_id: str,
+    market: str,
+    line: Dict[str, Any],
+    order_dt_fallback: datetime,
+    scope: MultiplierScope,
+    weight: Optional[float],
+    db: AsyncIOMotorDatabase,
+) -> Tuple[Optional[DepreciationObserveResponse], Optional[datetime]]:
+    """Shared logic for observe-from-order and observe-from-orderline.
+
+    Returns (result, observed_at_dt_used).
+    """
+    listing_sku = _extract_listing_sku(line)
+    if not listing_sku:
+        return None, None
+
+    observed_price = _extract_price(line)
+    if observed_price is None:
+        return None, None
+
+    observed_at_dt = _extract_observed_dt(line, fallback=order_dt_fallback)
+
+    try:
+        brand, model, storage_gb, grade = parse_sku(listing_sku)
+    except ValueError:
+        return None, None
+
+    obs_req = DepreciationObserveRequest(
+        user_id=user_id,
+        market=market,
+        brand=brand,
+        model=model,
+        storage_gb=storage_gb,
+        observed_price=observed_price,
+        observed_at=observed_at_dt.date(),
+        grade=grade,
+        scope=scope,
+        weight=weight,
+    )
+    return await observe(obs_req, db), observed_at_dt
+
+
 @router.post("/observe/from-orderline/{orderline_id}", response_model=ObserveFromOrderlineResponse)
 async def observe_from_orderline(
     orderline_id: str,
@@ -394,54 +623,43 @@ async def observe_from_orderline(
             doc = await col.find_one({"user_id": req.user_id, "orderline_id": int(orderline_id)})
         except (TypeError, ValueError):
             doc = None
+
     if not doc:
         raise HTTPException(status_code=404, detail="bm_orderline not found")
 
-    listing_sku = doc.get("listing_sku") or doc.get("listing") or ""
-    if not listing_sku:
-        raise HTTPException(status_code=422, detail="bm_orderline missing listing_sku/listing")
+    line: Dict[str, Any] = dict(doc)
 
-    price_raw = doc.get("price") or doc.get("unit_price")
-    try:
-        observed_price = float(price_raw)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="bm_orderline price not parseable")
+    # Prefer these common keys if present
+    listing_sku = str(line.get("listing_sku") or line.get("listing") or "")
+    if listing_sku:
+        line.setdefault("listing", listing_sku)
 
-    dt = doc.get("date_creation") or doc.get("date_payment") or doc.get("created_at")
-    if isinstance(dt, str):
-        try:
-            observed_at_dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-        except ValueError:
-            observed_at_dt = _now_dt()
-    elif isinstance(dt, datetime):
-        observed_at_dt = dt
-    else:
-        observed_at_dt = _now_dt()
+    order_dt = _parse_dt_best_effort(line.get("date_creation") or line.get("date_payment") or line.get("created_at"))
 
-    try:
-        brand, model, storage_gb, grade = parse_sku(listing_sku)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=f"Could not parse listing sku: {e}")
+    market = _u(req.market)
+    scope = _scope_or_default(req.scope)
 
-    obs_req = DepreciationObserveRequest(
+    res, observed_at_dt = await _observe_from_line(
         user_id=req.user_id,
-        market=req.market,
-        brand=brand,
-        model=model,
-        storage_gb=storage_gb,
-        observed_price=observed_price,
-        observed_at=observed_at_dt.date(),
-        grade=grade,
-        scope=req.scope,
+        market=market,
+        line=line,
+        order_dt_fallback=order_dt,
+        scope=scope,
         weight=req.weight,
+        db=db,
     )
-    res = await observe(obs_req, db)
+
+    if res is None:
+        raise HTTPException(status_code=422, detail="bm_orderline missing listing/price or sku not parseable")
+
+    used_sku = _extract_listing_sku(line)
+    used_price = _extract_price(line)
 
     return ObserveFromOrderlineResponse(
         orderline_id=orderline_id,
-        listing_sku=listing_sku,
-        observed_price=observed_price,
-        observed_at=observed_at_dt,
+        listing_sku=used_sku,
+        observed_price=float(used_price or 0.0),
+        observed_at=observed_at_dt or order_dt,
         result=res,
     )
 
@@ -452,80 +670,53 @@ async def observe_from_order(
     req: ObserveFromOrderRequest,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    # Reads bm_orders (nested orderlines) and calibrates multipliers from each orderline.
-    # Expected fields (best effort):
-    #   bm_orders.orderlines[].listing  (sku-like string)
-    #   bm_orders.orderlines[].price
-    #   bm_orders.orderlines[].date_creation / date_payment
+    """Reads bm_orders and calibrates multipliers from each orderline.
+
+    Supports both storage shapes:
+      - bm_orders.bm_raw.orderlines (current)
+      - bm_orders.orderlines (legacy)
+    """
     col = db["bm_orders"]
 
-    # order_id may be numeric; try both
     doc = await col.find_one({"user_id": req.user_id, "order_id": order_id})
     if not doc:
         try:
             doc = await col.find_one({"user_id": req.user_id, "order_id": int(order_id)})
         except (TypeError, ValueError):
             doc = None
+
     if not doc:
         raise HTTPException(status_code=404, detail="bm_order not found")
 
-    # Determine an order-level observed_at fallback
-    dt = doc.get("date_creation") or doc.get("date_payment") or doc.get("created_at")
-    if isinstance(dt, str):
-        try:
-            order_dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-        except ValueError:
-            order_dt = _now_dt()
-    elif isinstance(dt, datetime):
-        order_dt = dt
-    else:
-        order_dt = _now_dt()
+    order_dt = _parse_dt_best_effort(doc.get("date_creation") or doc.get("date_payment") or doc.get("created_at"))
 
-    results: list[DepreciationObserveResponse] = []
-    for ol in doc.get("orderlines", []) or []:
-        listing_sku = ol.get("listing") or ol.get("listing_sku") or ""
-        if not listing_sku:
-            continue
+    raw = doc.get("bm_raw") or {}
+    lines_any = doc.get("orderlines")
+    if lines_any is None:
+        lines_any = raw.get("orderlines")
 
-        price_raw = ol.get("price") or ol.get("unit_price")
-        try:
-            observed_price = float(price_raw)
-        except (TypeError, ValueError):
-            continue
+    market = _u(req.market)
+    scope = _scope_or_default(req.scope)
 
-        dt2 = ol.get("date_creation") or ol.get("date_payment")
-        if isinstance(dt2, str):
-            try:
-                observed_at_dt = datetime.fromisoformat(dt2.replace("Z", "+00:00"))
-            except ValueError:
-                observed_at_dt = order_dt
-        elif isinstance(dt2, datetime):
-            observed_at_dt = dt2
-        else:
-            observed_at_dt = order_dt
-
-        try:
-            brand, model, storage_gb, grade = parse_sku(listing_sku)
-        except ValueError:
-            continue
-
-        obs_req = DepreciationObserveRequest(
+    results: List[DepreciationObserveResponse] = []
+    for ol in _iter_orderlines(lines_any or []):
+        res, _dt_used = await _observe_from_line(
             user_id=req.user_id,
-            market=req.market,
-            brand=brand,
-            model=model,
-            storage_gb=storage_gb,
-            observed_price=observed_price,
-            observed_at=observed_at_dt.date(),
-            grade=grade,
-            scope=req.scope,
+            market=market,
+            line=ol,
+            order_dt_fallback=order_dt,
+            scope=scope,
             weight=req.weight,
+            db=db,
         )
-        res = await observe(obs_req, db)
-        results.append(res)
+        if res is not None:
+            results.append(res)
 
     return ObserveFromOrderResponse(
         order_id=str(order_id),
         observed_at=order_dt,
         results=results,
     )
+
+
+

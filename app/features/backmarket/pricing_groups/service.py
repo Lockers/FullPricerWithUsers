@@ -170,7 +170,20 @@ def _choose_better_tradein(existing: Dict[str, Any], candidate: Dict[str, Any]) 
 
 
 # Listing subfields that are written by other stages (backbox snapshot persistence).
-_LISTING_DYNAMIC_FIELDS = ("backbox", "backbox_history", "backbox_best_price_to_win")
+# Fields inside pricing_groups.listings[*] that are updated by background/side pipelines
+# (Backbox, Orders, etc.) and must be preserved when we rebuild pricing_groups from the
+# canonical sell-listings snapshot.
+_LISTING_DYNAMIC_FIELDS = (
+    # Backbox (competitor signal)
+    "backbox",
+    "backbox_history",
+    "backbox_best_price_to_win",
+
+    # Orders (real sales)
+    "sold_history",
+    "sold_best_price",
+    "sold_last_at",
+)
 
 
 def _child_snapshot_ids(child: Dict[str, Any]) -> List[str]:

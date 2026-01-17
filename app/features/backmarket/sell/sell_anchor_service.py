@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 from bson import ObjectId
@@ -80,8 +80,42 @@ DEFAULT_SETTINGS = SellAnchorSettings(
 
 REQUIRED_FEE_KEYS = {"bm_commission", "ccbm", "payment_processor", "shipping"}
 
-# Minimum number of "safe" child prices required before accepting auto anchor.
+# Default minimum number of "safe" child prices required before accepting auto anchor.
+# This is now configurable per-user via SellAnchorSettings.min_viable_child_prices, but
+# we keep the constant for backwards-compatibility and for other modules that import it.
 MIN_VIABLE_CHILD_PRICES = 5
+
+
+def _as_dt(v: Any) -> Optional[datetime]:
+    """Best-effort parse for datetimes stored in Mongo (datetime) or strings."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    try:
+        s = str(v).strip()
+    except Exception:
+        return None
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _median(xs: list[float]) -> Optional[float]:
+    if not xs:
+        return None
+    ys = sorted(float(x) for x in xs)
+    n = len(ys)
+    mid = n // 2
+    if n % 2 == 1:
+        return ys[mid]
+    return (ys[mid - 1] + ys[mid]) / 2.0
 
 
 
@@ -129,6 +163,88 @@ def _extract_best_price_to_win(listing: Dict[str, Any]) -> Optional[float]:
         if f is not None:
             return f
     return None
+
+
+def _extract_recent_best_price_to_win(
+    listing: Dict[str, Any],
+    *,
+    now: datetime,
+    lookback_days: int,
+) -> Optional[float]:
+    """Return the best (lowest) Backbox price_to_win within a recent time window.
+
+    The current implementation of backbox persistence keeps:
+      - `backbox_history`: up to the last 50 snapshots
+      - `backbox_best_price_to_win`: the *lowest ever* snapshot
+
+    We want to avoid anchoring off a single historic outlier, so this function first
+    looks at the recent history window and only falls back to the older fields.
+    """
+    cutoff = now - timedelta(days=max(1, int(lookback_days)))
+    hist = listing.get("backbox_history") or []
+    prices: list[float] = []
+
+    if isinstance(hist, list):
+        for h in hist:
+            if not isinstance(h, dict):
+                continue
+            ts = _as_dt(h.get("fetched_at") or h.get("ts") or h.get("timestamp") or h.get("at"))
+            if ts is None or ts < cutoff:
+                continue
+            p = _to_pos_float(h.get("price_to_win"))
+            if p is not None:
+                prices.append(float(p))
+
+    if prices:
+        return min(prices)
+
+    # Fallback to best-ever / latest snapshot.
+    return _extract_best_price_to_win(listing)
+
+
+def _extract_recent_sold_prices(
+    listing: Dict[str, Any],
+    *,
+    now: datetime,
+    lookback_days: int,
+) -> list[dict]:
+    """Extract recent sales from pricing_groups.listings[*].sold_history."""
+    cutoff = now - timedelta(days=max(1, int(lookback_days)))
+    out: list[dict] = []
+
+    hist = listing.get("sold_history") or []
+    if not isinstance(hist, list):
+        return out
+
+    for e in hist:
+        if not isinstance(e, dict):
+            continue
+        sold_at = _as_dt(e.get("sold_at") or e.get("date_payment") or e.get("date_creation"))
+        if sold_at is None or sold_at < cutoff:
+            continue
+
+        # Normalised by app/features/orders/pricing_groups_bridge.py
+        price = e.get("unit_price")
+        if price is None:
+            price = e.get("price")
+        if isinstance(price, dict):
+            price = price.get("amount")
+
+        p = _to_pos_float(price)
+        if p is None:
+            continue
+
+        out.append(
+            {
+                "price": float(p),
+                "sold_at": sold_at,
+                "order_id": e.get("order_id"),
+                "orderline_id": e.get("orderline_id"),
+                "currency": e.get("currency"),
+            }
+        )
+
+    return out
 
 
 def _extract_currency(group: Dict[str, Any], source_listing: Optional[Dict[str, Any]], fee_currency: str) -> str:
@@ -187,21 +303,54 @@ async def get_sell_anchor_settings_for_user(db: AsyncIOMotorDatabase, user_id: s
         s = DEFAULT_SETTINGS
         return {
             "user_id": user_id,
+            "anchor_mode": s.anchor_mode,
             "safe_ratio": s.safe_ratio,
             "fee_config": s.fee_config.model_dump(),
+            "recent_sold_days": s.recent_sold_days,
+            "recent_sold_min_samples": s.recent_sold_min_samples,
+            "backbox_lookback_days": s.backbox_lookback_days,
+            "backbox_outlier_pct": s.backbox_outlier_pct,
+            "min_viable_child_prices": s.min_viable_child_prices,
             "created_at": None,
             "updated_at": None,
         }
 
+    anchor_mode = str(doc.get("anchor_mode") or DEFAULT_SETTINGS.anchor_mode).strip().lower()
+    if anchor_mode not in {"manual_only", "auto"}:
+        anchor_mode = DEFAULT_SETTINGS.anchor_mode
+
     safe_ratio = _to_float(doc.get("safe_ratio")) or DEFAULT_SETTINGS.safe_ratio
     fee_cfg = _fee_config_or_default(doc.get("fee_config"))
 
-    settings = SellAnchorSettings(safe_ratio=safe_ratio, fee_config=fee_cfg)
+    recent_sold_days = int(doc.get("recent_sold_days") or DEFAULT_SETTINGS.recent_sold_days)
+    recent_sold_min_samples = int(doc.get("recent_sold_min_samples") or DEFAULT_SETTINGS.recent_sold_min_samples)
+    backbox_lookback_days = int(doc.get("backbox_lookback_days") or DEFAULT_SETTINGS.backbox_lookback_days)
+    backbox_outlier_pct = _to_float(doc.get("backbox_outlier_pct"))
+    if backbox_outlier_pct is None:
+        backbox_outlier_pct = float(DEFAULT_SETTINGS.backbox_outlier_pct)
+    min_viable_child_prices = int(doc.get("min_viable_child_prices") or DEFAULT_SETTINGS.min_viable_child_prices)
+
+    settings = SellAnchorSettings(
+        anchor_mode=anchor_mode,
+        safe_ratio=safe_ratio,
+        fee_config=fee_cfg,
+        recent_sold_days=recent_sold_days,
+        recent_sold_min_samples=recent_sold_min_samples,
+        backbox_lookback_days=backbox_lookback_days,
+        backbox_outlier_pct=backbox_outlier_pct,
+        min_viable_child_prices=min_viable_child_prices,
+    )
 
     return {
         "user_id": user_id,
+        "anchor_mode": settings.anchor_mode,
         "safe_ratio": settings.safe_ratio,
         "fee_config": settings.fee_config.model_dump(),
+        "recent_sold_days": settings.recent_sold_days,
+        "recent_sold_min_samples": settings.recent_sold_min_samples,
+        "backbox_lookback_days": settings.backbox_lookback_days,
+        "backbox_outlier_pct": settings.backbox_outlier_pct,
+        "min_viable_child_prices": settings.min_viable_child_prices,
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
     }
@@ -216,14 +365,26 @@ async def update_sell_anchor_settings_for_user(
         db,
         user_id,
         {
+            "anchor_mode": str(settings.anchor_mode),
             "safe_ratio": float(settings.safe_ratio),
             "fee_config": settings.fee_config.model_dump(),
+            "recent_sold_days": int(settings.recent_sold_days),
+            "recent_sold_min_samples": int(settings.recent_sold_min_samples),
+            "backbox_lookback_days": int(settings.backbox_lookback_days),
+            "backbox_outlier_pct": float(settings.backbox_outlier_pct),
+            "min_viable_child_prices": int(settings.min_viable_child_prices),
         },
     )
     return {
         "user_id": user_id,
+        "anchor_mode": str(saved.get("anchor_mode") or settings.anchor_mode),
         "safe_ratio": float(saved.get("safe_ratio") or settings.safe_ratio),
         "fee_config": (saved.get("fee_config") or settings.fee_config.model_dump()),
+        "recent_sold_days": int(saved.get("recent_sold_days") or settings.recent_sold_days),
+        "recent_sold_min_samples": int(saved.get("recent_sold_min_samples") or settings.recent_sold_min_samples),
+        "backbox_lookback_days": int(saved.get("backbox_lookback_days") or settings.backbox_lookback_days),
+        "backbox_outlier_pct": float(saved.get("backbox_outlier_pct") or settings.backbox_outlier_pct),
+        "min_viable_child_prices": int(saved.get("min_viable_child_prices") or settings.min_viable_child_prices),
         "created_at": saved.get("created_at"),
         "updated_at": saved.get("updated_at"),
     }
@@ -232,31 +393,19 @@ async def update_sell_anchor_settings_for_user(
 def _build_sell_anchor_for_group_doc(
     group: Dict[str, Any],
     *,
+    anchor_mode: str,
     safe_ratio: float,
     fee_config: FeeConfig,
+    recent_sold_days: int,
+    recent_sold_min_samples: int,
+    backbox_lookback_days: int,
+    backbox_outlier_pct: float,
+    min_viable_child_prices: int,
 ) -> Dict[str, Any]:
+    now = _now()
     listings = group.get("listings") or []
 
-    auto_gross: Optional[float] = None
-    source_listing: Optional[Dict[str, Any]] = None
-
-    for l in listings:
-        p = _extract_best_price_to_win(l)
-        if p is None:
-            continue
-        if auto_gross is None or p < auto_gross:
-            auto_gross = p
-            source_listing = l
-
-    currency = _extract_currency(group, source_listing, fee_config.currency)
-
-    auto_net: Optional[float] = None
-    auto_fees_total: Optional[float] = None
-    auto_breakdown: list[dict] = []
-    if auto_gross is not None:
-        auto_net, auto_fees_total, auto_breakdown = _compute_net(auto_gross, fee_config)
-
-    # safest: min(max_price) across children
+    # 0) Safest: min(max_price) across children
     group_max_price: Optional[float] = None
     for l in listings:
         mp = _to_pos_float(l.get("max_price"))
@@ -265,18 +414,96 @@ def _build_sell_anchor_for_group_doc(
         if group_max_price is None or mp < group_max_price:
             group_max_price = mp
 
-    # Require enough "safe" anchors before trusting auto pricing.
-    # Spec (planning): "if > 4 price_to_win values are <= safe_ratio * max_price".
     safe_threshold: Optional[float] = None
-    auto_viable_listings_count = 0
     if group_max_price is not None:
-        safe_threshold = group_max_price * safe_ratio
-        for l in listings:
-            p = _extract_best_price_to_win(l)
-            if p is None:
+        safe_threshold = group_max_price * float(safe_ratio)
+
+    # 1) Orders / realised sales (highest weight)
+    sold_entries: list[tuple[float, datetime, Dict[str, Any]]] = []
+    sold_last_at: Optional[datetime] = None
+    sold_last_listing: Optional[Dict[str, Any]] = None
+
+    for l in listings:
+        for e in _extract_recent_sold_prices(l, now=now, lookback_days=recent_sold_days):
+            p = _to_pos_float(e.get("price"))
+            dt = e.get("sold_at")
+            if p is None or not isinstance(dt, datetime):
                 continue
-            if p <= safe_threshold:
-                auto_viable_listings_count += 1
+            sold_entries.append((float(p), dt, l))
+            if sold_last_at is None or dt > sold_last_at:
+                sold_last_at = dt
+                sold_last_listing = l
+
+    sold_recent_count = len(sold_entries)
+    sold_recent_median_gross: Optional[float] = None
+    sold_net: Optional[float] = None
+    sold_fees_total: Optional[float] = None
+    sold_fee_breakdown: list[dict] = []
+    sold_viable = False
+
+    if sold_recent_count >= max(1, int(recent_sold_min_samples)):
+        sold_recent_median_gross = _median([p for (p, _dt, _l) in sold_entries])
+        if sold_recent_median_gross is not None:
+            sold_net, sold_fees_total, sold_fee_breakdown = _compute_net(sold_recent_median_gross, fee_config)
+            sold_viable = bool(sold_net is not None and sold_net > 0)
+
+    # 2) Backbox (auto) - use recent window, and ignore extreme low outliers
+    backbox_candidates: list[tuple[float, Dict[str, Any]]] = []
+    for l in listings:
+        p = _extract_recent_best_price_to_win(l, now=now, lookback_days=backbox_lookback_days)
+        if p is None:
+            continue
+        if safe_threshold is not None and p > safe_threshold:
+            continue
+        backbox_candidates.append((float(p), l))
+
+    auto_viable_listings_count = len(backbox_candidates)
+
+    auto_gross: Optional[float] = None
+    source_listing: Optional[Dict[str, Any]] = None
+    backbox_outlier_skipped = False
+    backbox_median: Optional[float] = None
+    backbox_threshold_low: Optional[float] = None
+
+    if backbox_candidates:
+        backbox_candidates.sort(key=lambda t: t[0])
+        prices = [p for (p, _l) in backbox_candidates]
+        backbox_median = _median(prices)
+        if backbox_median is not None:
+            backbox_threshold_low = backbox_median * (1.0 - max(0.0, float(backbox_outlier_pct)))
+
+        # If we have "enough" viable prices, apply outlier skipping.
+        chosen_price: Optional[float] = None
+        chosen_listing: Optional[Dict[str, Any]] = None
+
+        if (
+            backbox_threshold_low is not None
+            and float(backbox_outlier_pct) > 0
+            and len(backbox_candidates) >= max(2, int(min_viable_child_prices))
+        ):
+            for p, l in backbox_candidates:
+                if p >= backbox_threshold_low:
+                    chosen_price = p
+                    chosen_listing = l
+                    break
+            if chosen_price is None:
+                # everything is below the threshold (rare); fall back to the min
+                chosen_price, chosen_listing = backbox_candidates[0]
+            if chosen_price != backbox_candidates[0][0]:
+                backbox_outlier_skipped = True
+        else:
+            chosen_price, chosen_listing = backbox_candidates[0]
+
+        auto_gross = chosen_price
+        source_listing = chosen_listing
+
+    currency = _extract_currency(group, source_listing or sold_last_listing, fee_config.currency)
+
+    auto_net: Optional[float] = None
+    auto_fees_total: Optional[float] = None
+    auto_breakdown: list[dict] = []
+    if auto_gross is not None:
+        auto_net, auto_fees_total, auto_breakdown = _compute_net(auto_gross, fee_config)
 
     reason: Optional[str] = None
     auto_viable = False
@@ -284,16 +511,16 @@ def _build_sell_anchor_for_group_doc(
         reason = "missing_gross_anchor"
     elif group_max_price is None:
         reason = "missing_max_price"
-    elif auto_viable_listings_count < MIN_VIABLE_CHILD_PRICES:
+    elif auto_viable_listings_count < int(min_viable_child_prices):
         reason = "insufficient_viable_prices"
     elif safe_threshold is not None and auto_gross > safe_threshold:
         reason = "gross_above_safe_ratio"
     elif auto_net is None or auto_net <= 0:
-        # Avoid silently accepting broken fee configs (net hits 0/negative)
         reason = "net_non_positive"
     else:
         auto_viable = True
 
+    # 3) Manual fallback
     manual_gross = _to_pos_float(group.get("manual_sell_anchor_gross"))
     manual_net: Optional[float] = None
     manual_fees_total: Optional[float] = None
@@ -301,33 +528,81 @@ def _build_sell_anchor_for_group_doc(
     if manual_gross is not None:
         manual_net, manual_fees_total, manual_breakdown = _compute_net(manual_gross, fee_config)
 
+    # 4) Select which anchor to use
     gross_used: Optional[float] = None
     net_used: Optional[float] = None
     source_used: Optional[str] = None
     needs_manual_anchor = False
+    used_listing: Optional[Dict[str, Any]] = None
 
-    if auto_viable and auto_gross is not None and auto_net is not None and auto_net > 0:
-        gross_used = auto_gross
-        net_used = auto_net
-        source_used = "auto"
-    elif manual_gross is not None and manual_net is not None and manual_net > 0:
-        gross_used = manual_gross
-        net_used = manual_net
-        source_used = "manual"
+    mode = str(anchor_mode or "").strip().lower()
+    if mode not in {"manual_only", "auto"}:
+        mode = "manual_only"
+
+    if mode == "manual_only":
+        # Safety-first: only use the manual anchor. If missing, mark group as requiring manual setup.
+        if manual_gross is not None and manual_net is not None and manual_net > 0:
+            gross_used = float(manual_gross)
+            net_used = float(manual_net)
+            source_used = "manual"
+            used_listing = None
+            reason = "manual_only"
+        else:
+            needs_manual_anchor = True
+            source_used = "manual_only"
+            reason = "manual_only_missing_manual_anchor"
     else:
-        needs_manual_anchor = True
+        # Auto: realised sales > backbox-derived anchor > manual fallback
+        if sold_viable and sold_recent_median_gross is not None and sold_net is not None and sold_net > 0:
+            gross_used = float(sold_recent_median_gross)
+            net_used = float(sold_net)
+            source_used = "sold_recent"
+            used_listing = sold_last_listing
+            reason = "sold_recent"
+        elif auto_viable and auto_gross is not None and auto_net is not None and auto_net > 0:
+            gross_used = float(auto_gross)
+            net_used = float(auto_net)
+            source_used = "auto"
+            used_listing = source_listing
+        elif manual_gross is not None and manual_net is not None and manual_net > 0:
+            gross_used = float(manual_gross)
+            net_used = float(manual_net)
+            source_used = "manual"
+            used_listing = None
+        else:
+            needs_manual_anchor = True
 
     return {
+        "anchor_mode": mode,
+        # Backbox-derived fields (auto)
         "lowest_gross_price_to_win": auto_gross,
         "lowest_net_sell_price": auto_net,
         "auto_fees_total": auto_fees_total,
         "auto_fee_breakdown": auto_breakdown,
-        "source_bm_listing_id": (source_listing or {}).get("bm_listing_id"),
-        "source_full_sku": (source_listing or {}).get("full_sku"),
-        "safe_ratio": safe_ratio,
+        "backbox_lookback_days": int(backbox_lookback_days),
+        "backbox_outlier_pct": float(backbox_outlier_pct),
+        "backbox_outlier_skipped": bool(backbox_outlier_skipped),
+        "backbox_median": backbox_median,
+        "backbox_threshold_low": backbox_threshold_low,
+
+        # Orders / sales-derived fields
+        "recent_sold_days": int(recent_sold_days),
+        "recent_sold_min_samples": int(recent_sold_min_samples),
+        "sold_recent_count": int(sold_recent_count),
+        "sold_recent_median_gross": sold_recent_median_gross,
+        "sold_recent_last_at": sold_last_at,
+        "sold_net_sell_price": sold_net,
+        "sold_fees_total": sold_fees_total,
+        "sold_fee_breakdown": sold_fee_breakdown,
+        "sold_viable": sold_viable,
+
+        # Shared / selection
+        "source_bm_listing_id": (used_listing or {}).get("bm_listing_id"),
+        "source_full_sku": (used_listing or {}).get("full_sku"),
+        "safe_ratio": float(safe_ratio),
         "safe_gross_threshold": safe_threshold,
-        "auto_viable_listings_count": auto_viable_listings_count,
-        "auto_viable_listings_min_required": MIN_VIABLE_CHILD_PRICES,
+        "auto_viable_listings_count": int(auto_viable_listings_count),
+        "auto_viable_listings_min_required": int(min_viable_child_prices),
         "max_price": group_max_price,
         "auto_viable": auto_viable,
         "reason": reason,
@@ -341,7 +616,7 @@ def _build_sell_anchor_for_group_doc(
         "needs_manual_anchor": needs_manual_anchor,
         "currency": currency,
         "fees": fee_config.model_dump(),
-        "computed_at": _now(),
+        "computed_at": now,
     }
 
 
@@ -359,10 +634,28 @@ async def recompute_sell_anchor_for_group(
     safe_ratio = float(settings_doc["safe_ratio"])
     fee_config = _fee_config_or_default(settings_doc.get("fee_config"))
 
+    recent_sold_days = int(settings_doc.get("recent_sold_days") or DEFAULT_SETTINGS.recent_sold_days)
+    recent_sold_min_samples = int(
+        settings_doc.get("recent_sold_min_samples") or DEFAULT_SETTINGS.recent_sold_min_samples
+    )
+    backbox_lookback_days = int(settings_doc.get("backbox_lookback_days") or DEFAULT_SETTINGS.backbox_lookback_days)
+    backbox_outlier_pct = float(settings_doc.get("backbox_outlier_pct") or DEFAULT_SETTINGS.backbox_outlier_pct)
+    min_viable_child_prices = int(
+        settings_doc.get("min_viable_child_prices") or DEFAULT_SETTINGS.min_viable_child_prices
+    )
+
+    anchor_mode = str(settings_doc.get("anchor_mode") or DEFAULT_SETTINGS.anchor_mode)
+
     sell_anchor = _build_sell_anchor_for_group_doc(
         group,
+        anchor_mode=anchor_mode,
         safe_ratio=safe_ratio,
         fee_config=fee_config,
+        recent_sold_days=recent_sold_days,
+        recent_sold_min_samples=recent_sold_min_samples,
+        backbox_lookback_days=backbox_lookback_days,
+        backbox_outlier_pct=backbox_outlier_pct,
+        min_viable_child_prices=min_viable_child_prices,
     )
 
     await repo.update_pricing_group_sell_anchor(db, gid, sell_anchor=sell_anchor)
@@ -434,6 +727,18 @@ async def recompute_sell_anchors_for_user(
     safe_ratio = float(settings_doc["safe_ratio"])
     fee_config = _fee_config_or_default(settings_doc.get("fee_config"))
 
+    recent_sold_days = int(settings_doc.get("recent_sold_days") or DEFAULT_SETTINGS.recent_sold_days)
+    recent_sold_min_samples = int(
+        settings_doc.get("recent_sold_min_samples") or DEFAULT_SETTINGS.recent_sold_min_samples
+    )
+    backbox_lookback_days = int(settings_doc.get("backbox_lookback_days") or DEFAULT_SETTINGS.backbox_lookback_days)
+    backbox_outlier_pct = float(settings_doc.get("backbox_outlier_pct") or DEFAULT_SETTINGS.backbox_outlier_pct)
+    min_viable_child_prices = int(
+        settings_doc.get("min_viable_child_prices") or DEFAULT_SETTINGS.min_viable_child_prices
+    )
+
+    anchor_mode = str(settings_doc.get("anchor_mode") or DEFAULT_SETTINGS.anchor_mode)
+
     q: Dict[str, Any] = {"user_id": user_id}
     if groups_filter:
         q.update(groups_filter)
@@ -477,8 +782,14 @@ async def recompute_sell_anchors_for_user(
             async with sem:
                 sell_anchor = _build_sell_anchor_for_group_doc(
                     group_doc,
+                    anchor_mode=anchor_mode,
                     safe_ratio=safe_ratio,
                     fee_config=fee_config,
+                    recent_sold_days=recent_sold_days,
+                    recent_sold_min_samples=recent_sold_min_samples,
+                    backbox_lookback_days=backbox_lookback_days,
+                    backbox_outlier_pct=backbox_outlier_pct,
+                    min_viable_child_prices=min_viable_child_prices,
                 )
                 await repo.update_pricing_group_sell_anchor(db, gid, sell_anchor=sell_anchor)
                 updated += 1

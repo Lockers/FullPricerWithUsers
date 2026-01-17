@@ -530,7 +530,35 @@ async def run_sell_pricing_cycle_for_user(
     else:
         timings["cleanup_deactivate_session"] = 0.0
 
-    # 6) Recompute group-level sell anchors (lowest net sell price, viability, etc.)
+    # 6) Sync orders (incremental) + apply to pricing_groups
+    #
+    # IMPORTANT:
+    # We do this BEFORE recomputing sell anchors / trade pricing so the most recent
+    # realised sale prices can influence the anchor selection in the same cycle.
+    t0 = time.perf_counter()
+    try:
+        orders_sync_res = await sync_bm_orders_for_user(
+            db,
+            user_id=user_id,
+            full=False,          # incremental default
+            page_size=50,        # default in service
+            overlap_seconds=300, # default in service
+        )
+        logger.info(
+            "[sell_pricing_cycle] orders_sync DONE user_id=%s pages=%s fetched=%s upserted_new=%s elapsed=%.3fs",
+            user_id,
+            orders_sync_res.get("pages"),
+            orders_sync_res.get("fetched_orders"),
+            orders_sync_res.get("upserted_new"),
+            time.perf_counter() - t0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[sell_pricing_cycle] orders_sync ERROR user_id=%s err=%r", user_id, exc)
+        orders_sync_res = {"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}
+
+    timings["orders_sync"] = time.perf_counter() - t0
+
+    # 7) Recompute group-level sell anchors (lowest net sell price, viability, etc.)
     t0 = time.perf_counter()
     try:
         sell_anchor_recompute_res = await recompute_sell_anchors_for_user(
@@ -558,7 +586,7 @@ async def run_sell_pricing_cycle_for_user(
         )
         sell_anchor_recompute_res = {"error": str(exc)}
 
-    # 7) Trade pricing recompute (max_trade_price)
+    # 8) Trade pricing recompute (max_trade_price)
     t0 = time.perf_counter()
     try:
         trade_pricing_recompute_res = await recompute_trade_pricing_for_user(
@@ -583,31 +611,6 @@ async def run_sell_pricing_cycle_for_user(
             exc,
         )
         trade_pricing_recompute_res = {"error": str(exc)}
-
-    # 8) Sync orders (incremental) + apply to pricing_groups
-    t0 = time.perf_counter()
-    try:
-        orders_sync_res = await sync_bm_orders_for_user(
-            db,
-            user_id=user_id,
-            full=False,          # incremental default
-            page_size=50,        # default in service
-            overlap_seconds=300, # default in service
-        )
-        logger.info(
-            "[sell_pricing_cycle] orders_sync DONE user_id=%s pages=%s fetched=%s upserted_new=%s elapsed=%.3fs",
-            user_id,
-            orders_sync_res.get("pages"),
-            orders_sync_res.get("fetched_orders"),
-            orders_sync_res.get("upserted_new"),
-            time.perf_counter() - t0,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("[sell_pricing_cycle] orders_sync ERROR user_id=%s err=%r", user_id, exc)
-        orders_sync_res = {"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}
-
-    timings["orders_sync"] = time.perf_counter() - t0
-
 
     timings["total"] = time.perf_counter() - start_total
     finished_at_dt = _now()

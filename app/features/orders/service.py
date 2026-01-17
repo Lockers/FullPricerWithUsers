@@ -13,8 +13,38 @@ from app.features.orders.pricing_groups_bridge import apply_orders_to_pricing_gr
 
 
 def _to_rfc3339(dt: datetime) -> str:
+    """Format a datetime in RFC3339 (UTC).
+
+    Docs for /ws/orders state RFC3339, but BM environments have historically
+    returned validation errors requesting "YYYY-MM-DD HH:MM:SS". We keep this
+    helper for a first attempt, but fall back to the legacy format when needed.
+    """
+
     dtu = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     return dtu.isoformat().replace("+00:00", "Z")
+
+
+def _to_legacy_ws_datetime(dt: datetime) -> str:
+    """Format a datetime as expected by some BM /ws endpoints.
+
+    Some Back Market WS endpoints (including /ws/orders in some envs) validate
+    date filters against the pattern "YYYY-MM-DD HH:MM:SS".
+    """
+
+    dtu = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dtu.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _is_wrong_date_format_422(resp: Any) -> bool:
+    """Detect BM validation error for date format (422)."""
+
+    try:
+        if getattr(resp, "status_code", None) != 422:
+            return False
+        txt = (getattr(resp, "text", None) or "")
+        return "WrongDateFormat" in txt or "Ws.OrderList.WrongDateFormat" in txt
+    except Exception:
+        return False
 
 
 async def sync_bm_orders_for_user(
@@ -41,17 +71,42 @@ async def sync_bm_orders_for_user(
 
     page = 1
     page_size = min(50, max(1, int(page_size)))
+    # NOTE: Despite API docs mentioning RFC3339, the /ws/orders endpoint has
+    # been observed (preprod + some prod environments) to validate
+    # date_modification against "YYYY-MM-DD HH:MM:SS". Start with the legacy
+    # format to avoid noisy 422s, and fall back to RFC3339 if needed.
+    use_legacy_date_format = True
 
     while True:
         params: Dict[str, Any] = {"page": page, "page-size": page_size}
         if since is not None:
-            params["date_modification"] = _to_rfc3339(since)
+            params["date_modification"] = (
+                _to_legacy_ws_datetime(since)
+                if use_legacy_date_format
+                else _to_rfc3339(since)
+            )
 
         resp = await client.get(
             endpoint_key="sell_orders_get",
             path="/ws/orders",
             params=params,
         )
+
+        # BM WS environments are inconsistent about the expected datetime format
+        # for date_modification filters. If we detect the 422 "WrongDateFormat",
+        # toggle the format and retry once.
+        if _is_wrong_date_format_422(resp) and since is not None:
+            use_legacy_date_format = not use_legacy_date_format
+            params["date_modification"] = (
+                _to_legacy_ws_datetime(since)
+                if use_legacy_date_format
+                else _to_rfc3339(since)
+            )
+            resp = await client.get(
+                endpoint_key="sell_orders_get",
+                path="/ws/orders",
+                params=params,
+            )
 
         if resp.status_code != 200:
             # Transport already retried; keep this failure explicit.
