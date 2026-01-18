@@ -8,7 +8,7 @@ Centralised error types + FastAPI exception handlers.
 from __future__ import annotations
 
 import logging
-from typing import Any, Type
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -162,37 +162,21 @@ def register_exception_handlers(app: FastAPI) -> None:
     # ------------------------------------------------------------------
     # Optional BackMarket exception mapping
     #
-    # This structure is specifically to satisfy strict static analysis:
-    # - names are defined on BOTH try and except paths
-    # - handlers only register if BM exceptions imported successfully
+    # Import the optional module and only register handlers if available.
+    # Ensures:
+    # - bm_exceptions is defined on both try/except paths
+    # - no CamelCase local variables
     # ------------------------------------------------------------------
 
-    bm_client_error: Type[Exception]
-    bm_misconfigured_error: Type[Exception]
-    bm_rate_limited: Type[Exception]
-    bm_max_retries_error: Type[Exception]
-    bm_exceptions_available = False
-
     try:
-        from app.features.backmarket.transport.exceptions import (  # noqa: WPS433
-            BMClientError as bm_client_error,
-            BMMisconfiguredError as bm_misconfigured_error,
-            BMRateLimited as bm_rate_limited,
-            BMMaxRetriesError as bm_max_retries_error,
-        )
+        from app.features.backmarket.transport import exceptions as bm_exceptions  # noqa: WPS433
     except ImportError:
-        # Define fallbacks for static analysis; we won't register handlers.
-        bm_client_error = Exception
-        bm_misconfigured_error = Exception
-        bm_rate_limited = Exception
-        bm_max_retries_error = Exception
-        logger.debug('BackMarket exceptions not importable; skipping BM exception handlers')
-    else:
-        bm_exceptions_available = True
+        bm_exceptions = None
+        logger.debug("BackMarket exceptions not importable; skipping BM exception handlers")
 
-    if bm_exceptions_available:
+    if bm_exceptions is not None:
 
-        @app.exception_handler(bm_misconfigured_error)
+        @app.exception_handler(bm_exceptions.BMMisconfiguredError)
         async def _handle_bm_misconfigured(request: Request, _exc: Exception) -> JSONResponse:
             return _json_error(
                 request,
@@ -201,7 +185,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 message="Back Market credentials are missing or invalid for this user",
             )
 
-        @app.exception_handler(bm_rate_limited)
+        @app.exception_handler(bm_exceptions.BMRateLimited)
         async def _handle_bm_rate_limited(request: Request, _exc: Exception) -> JSONResponse:
             return _json_error(
                 request,
@@ -210,7 +194,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 message="Temporarily rate-limited while calling Back Market; retry shortly",
             )
 
-        @app.exception_handler(bm_max_retries_error)
+        @app.exception_handler(bm_exceptions.BMMaxRetriesError)
         async def _handle_bm_max_retries(request: Request, _exc: Exception) -> JSONResponse:
             return _json_error(
                 request,
@@ -219,7 +203,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 message="Back Market did not respond after multiple retries",
             )
 
-        @app.exception_handler(bm_client_error)
+        @app.exception_handler(bm_exceptions.BMClientError)
         async def _handle_bm_client_error(request: Request, _exc: Exception) -> JSONResponse:
             return _json_error(
                 request,
@@ -237,6 +221,9 @@ def register_exception_handlers(app: FastAPI) -> None:
             code="internal_error",
             message="Internal server error",
         )
+
+
+
 
 
 

@@ -5,13 +5,27 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import cast
 
 from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from starlette.datastructures import State
 
 from app.features.backmarket.sell.service import run_price_all_for_user
 
 logger = logging.getLogger(__name__)
+
+
+class _AppState(State):
+    # Type-only attributes for app.state to satisfy IDEs/type checkers.
+    db: AsyncIOMotorDatabase
+    auto_price_all_lock: asyncio.Lock
+    auto_price_all_stop: asyncio.Event | None
+    auto_price_all_task: asyncio.Task | None
+
+
+class _FastAPIWithState(FastAPI):
+    state: _AppState
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -160,18 +174,23 @@ async def _run_once(db: AsyncIOMotorDatabase, user_id: str, s: AutoPriceAllSetti
 
 
 async def _auto_price_all_loop(app: FastAPI, stop: asyncio.Event, s: AutoPriceAllSettings) -> None:
+    app = cast(_FastAPIWithState, app)
+
     # This lock prevents overlapping runs if something calls start twice (or you add a manual trigger).
     lock: asyncio.Lock = getattr(app.state, "auto_price_all_lock", asyncio.Lock())
     setattr(app.state, "auto_price_all_lock", lock)
 
     # Optional: run immediately.
     if s.run_on_startup and not stop.is_set():
+        # noinspection PyBroadException
         try:
             async with lock:
                 db: AsyncIOMotorDatabase = app.state.db
                 for uid in await _resolve_user_ids(db, s.user_ids):
                     await _run_once(db, uid, s)
-        except Exception:  # noqa: BLE001
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001  # pylint: disable=broad-except
             logger.exception("[auto_price_all] run_on_startup failed")
 
     while not stop.is_set():
@@ -184,6 +203,7 @@ async def _auto_price_all_loop(app: FastAPI, stop: asyncio.Event, s: AutoPriceAl
         if stop.is_set():
             break
 
+        # noinspection PyBroadException
         try:
             async with lock:
                 db = app.state.db
@@ -196,7 +216,9 @@ async def _auto_price_all_loop(app: FastAPI, stop: asyncio.Event, s: AutoPriceAl
                     continue
                 for uid in user_ids:
                     await _run_once(db, uid, s)
-        except Exception:  # noqa: BLE001
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001  # pylint: disable=broad-except
             logger.exception("[auto_price_all] loop iteration failed")
 
 
@@ -206,6 +228,7 @@ def start_auto_price_all(app: FastAPI) -> None:
     This is safe for single-worker uvicorn. If you run uvicorn with multiple workers
     (or use --reload), you may see duplicate schedulers.
     """
+    app = cast(_FastAPIWithState, app)
 
     s = load_auto_price_all_settings()
     if not s.enabled:
@@ -238,6 +261,8 @@ def start_auto_price_all(app: FastAPI) -> None:
 
 
 async def stop_auto_price_all(app: FastAPI) -> None:
+    app = cast(_FastAPIWithState, app)
+
     stop: asyncio.Event | None = getattr(app.state, "auto_price_all_stop", None)
     task: asyncio.Task | None = getattr(app.state, "auto_price_all_task", None)
 
@@ -246,11 +271,13 @@ async def stop_auto_price_all(app: FastAPI) -> None:
 
     stop.set()
     task.cancel()
+
+    # noinspection PyBroadException
     try:
         await task
     except asyncio.CancelledError:
         pass
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  # pylint: disable=broad-except
         logger.exception("[auto_price_all] task shutdown failed")
     finally:
         setattr(app.state, "auto_price_all_stop", None)

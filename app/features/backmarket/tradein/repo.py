@@ -431,7 +431,7 @@ async def persist_tradein_offer_update(
       - pricing_groups.tradein_listing.offer_update (latest)
       - pricing_groups.tradein_listing.offer_update_history (append, bounded)
 
-    This stores what WE sent to BM (amount, status, error body prefix, etc) so the
+    This stores what WE sent to BM (amount, status, error body prefix, etc.) so the
     automation can be audited without needing a separate log store.
     """
     now = _now_utc()

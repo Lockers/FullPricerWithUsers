@@ -234,7 +234,9 @@ async def run_tradein_offer_update_for_group(
         override_key = raw_override.strip()
 
     scenario_used: Optional[Dict[str, Any]] = None
-    scenario_used_key: Optional[str] = None
+
+    # Default to persisted "best" selection; overridden below if requested/override exists.
+    scenario_used_key: Optional[str] = trade_pricing_doc.get("best_scenario_key") or computed.get("best_scenario_key")
     scenario_selection_source = "best"
 
     if scenario_key_requested:
@@ -243,9 +245,6 @@ async def run_tradein_offer_update_for_group(
     elif override_key:
         scenario_used_key = override_key
         scenario_selection_source = "override"
-    else:
-        scenario_used_key = trade_pricing_doc.get("best_scenario_key") or computed.get("best_scenario_key")
-        scenario_selection_source = "best"
 
     if scenario_used_key and isinstance(scenario_docs, list):
         for s in scenario_docs:
@@ -253,7 +252,7 @@ async def run_tradein_offer_update_for_group(
                 scenario_used = s
                 break
 
-    # If the user requested a scenario and we can see scenarios but it doesn't exist, hard error.
+    # If the user requested a scenario, and we can see scenarios, but it doesn't exist, hard error.
     if scenario_key_requested and scenario_used is None and isinstance(scenario_docs, list):
         return {
             "error": "scenario_not_found",
