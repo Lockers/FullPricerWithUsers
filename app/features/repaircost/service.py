@@ -81,6 +81,29 @@ def _coerce_costs_for_read(costs: Any) -> Dict[str, float]:
     return out
 
 
+def _coerce_times_for_read(times: Any) -> Dict[str, float]:
+    """Ensure the times dict contains ALL required keys for RepairCosts.
+
+    Time values are stored in minutes.
+
+    Minimal mapping (to tolerate older docs / schema drift):
+      - housing <- housing OR full_housing
+      - screen_refurb_in_house <- screen_refurb_in_house OR screen_refurb
+    """
+    t = times if isinstance(times, dict) else {}
+
+    out = {
+        "screen_replacement": _to_float(t.get("screen_replacement"), 0.0),
+        "screen_refurb_in_house": _to_float(
+            t.get("screen_refurb_in_house", t.get("screen_refurb")), 0.0
+        ),
+        "screen_refurb_external": _to_float(t.get("screen_refurb_external"), 0.0),
+        "battery": _to_float(t.get("battery"), 0.0),
+        "housing": _to_float(t.get("housing", t.get("full_housing")), 0.0),
+    }
+    return out
+
+
 def _normalize_doc_for_read(doc: Dict[str, Any]) -> Dict[str, Any]:
     d = dict(doc)
 
@@ -91,6 +114,7 @@ def _normalize_doc_for_read(doc: Dict[str, Any]) -> Dict[str, Any]:
     d["notes"] = d.get("notes")
 
     d["costs"] = _coerce_costs_for_read(d.get("costs"))
+    d["times"] = _coerce_times_for_read(d.get("times"))
 
     return d
 
@@ -103,19 +127,36 @@ async def upsert_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: Re
     brand = _norm_brand(payload.brand)
     model = _norm_model(payload.model)
 
+    # Only recompute pricing if pricing-affecting fields changed.
+    # (times/notes do NOT affect pricing.)
+    prev = await repo.get_one(user_id=user_id, market=mkt, brand=brand, model=model)
+    prev_currency = _norm_currency(prev.get("currency")) if prev else None
+    prev_costs = _coerce_costs_for_read(prev.get("costs")) if prev else None
+
+    payload_costs = _coerce_costs_for_read(payload.costs.model_dump())
+    payload_times = _coerce_times_for_read(payload.times.model_dump() if payload.times else None)
+
+    pricing_affects = (
+        prev is None
+        or prev_currency != cur
+        or (prev_costs is not None and prev_costs != payload_costs)
+    )
+
     doc = await repo.upsert(
         user_id=user_id,
         market=mkt,
         currency=cur,
         brand=brand,
         model=model,
-        costs=payload.costs.model_dump(),
+        costs=payload_costs,
+        times=payload_times,
         notes=payload.notes,
     )
 
     # Push snapshot into pricing_groups immediately (per user, per model family)
     await apply_repair_cost_snapshot_to_pricing_groups(db, user_id=user_id, repair_cost_doc=doc)
-    await recompute_trade_pricing_for_user(db, user_id, groups_filter={"brand": brand, "model": model})
+    if pricing_affects:
+        await recompute_trade_pricing_for_user(db, user_id, groups_filter={"brand": brand, "model": model})
 
     return RepairCostRead(**_normalize_doc_for_read(doc))
 
@@ -183,11 +224,19 @@ async def patch_repair_cost(db: AsyncIOMotorDatabase, user_id: str, payload: Rep
         for k, v in costs_patch.items():
             update[f"costs.{k}"] = v
 
+    if payload.times is not None:
+        times_patch = payload.times.model_dump(exclude_unset=True, exclude_none=True)
+        for k, v in times_patch.items():
+            update[f"times.{k}"] = v
+
     doc = await repo.patch_one(user_id=user_id, market=mkt, brand=b, model=md, update_fields=update)
 
     # Push snapshot into pricing_groups immediately
     await apply_repair_cost_snapshot_to_pricing_groups(db, user_id=user_id, repair_cost_doc=doc)
-    await recompute_trade_pricing_for_user(db, user_id, groups_filter={"brand": b, "model": md})
+    # Only recompute pricing if pricing-affecting fields changed.
+    pricing_affects = payload.currency is not None or payload.costs is not None
+    if pricing_affects:
+        await recompute_trade_pricing_for_user(db, user_id, groups_filter={"brand": b, "model": md})
 
     return RepairCostRead(**_normalize_doc_for_read(doc))
 

@@ -23,6 +23,7 @@ from typing import Optional, Annotated
 from pydantic import BaseModel, Field
 
 Money = Annotated[float, Field(ge=0.0)]
+Minutes = Annotated[float, Field(ge=0.0)]
 
 
 class RepairCosts(BaseModel):
@@ -33,12 +34,32 @@ class RepairCosts(BaseModel):
     housing: Money
 
 
+class RepairTimes(BaseModel):
+    """Estimated time to perform each repair action, in minutes."""
+
+    screen_replacement: Minutes
+    screen_refurb_in_house: Minutes
+    screen_refurb_external: Minutes
+    battery: Minutes
+    housing: Minutes
+
+
 class RepairCostsPatch(BaseModel):
     screen_replacement: Optional[Money] = None
     screen_refurb_in_house: Optional[Money] = None
     screen_refurb_external: Optional[Money] = None
     battery: Optional[Money] = None
     housing: Optional[Money] = None
+
+
+class RepairTimesPatch(BaseModel):
+    """PATCH variant of RepairTimes (minutes)."""
+
+    screen_replacement: Optional[Minutes] = None
+    screen_refurb_in_house: Optional[Minutes] = None
+    screen_refurb_external: Optional[Minutes] = None
+    battery: Optional[Minutes] = None
+    housing: Optional[Minutes] = None
 
 
 class RepairCostUpsert(BaseModel):
@@ -52,6 +73,8 @@ class RepairCostUpsert(BaseModel):
     model: Annotated[str, Field(min_length=1, max_length=64)]
 
     costs: RepairCosts
+    # Optional for backwards compatibility; if omitted, defaults to all zeros.
+    times: Optional[RepairTimes] = None
     notes: Optional[str] = None
 
 
@@ -65,6 +88,7 @@ class RepairCostPatchRequest(BaseModel):
 
     currency: Optional[Annotated[str, Field(min_length=3, max_length=3)]] = None
     costs: Optional[RepairCostsPatch] = None
+    times: Optional[RepairTimesPatch] = None
     notes: Optional[str] = None
 
 
@@ -75,6 +99,7 @@ class RepairCostRead(BaseModel):
     brand: str
     model: str
     costs: RepairCosts
+    times: RepairTimes
     notes: Optional[str] = None
     created_at: datetime
     updated_at: datetime

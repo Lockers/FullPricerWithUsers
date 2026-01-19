@@ -46,6 +46,7 @@ async def apply_repair_cost_snapshot_to_pricing_groups(
         "market": market,
         "currency": currency,
         "costs": (repair_cost_doc.get("costs") or {}),
+        "times": (repair_cost_doc.get("times") or {}),
         "source_updated_at": repair_cost_doc.get("updated_at"),
         "applied_at": now,
     }

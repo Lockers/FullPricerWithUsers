@@ -1,6 +1,6 @@
 # app/features/backmarket/sell/pricing_cycle.py
 """
-Sell pricing cycle (Backbox pull) - SESSION-DRIVEN, PER-LISTING DEACTIVATION.
+Sell pricing cycle (Backbox pull) - SESSION-DRIVEN, PHASED DEACTIVATION.
 
 Required flow
 -------------
@@ -8,22 +8,32 @@ Required flow
   2) Create activation session (snapshot original quantities + required metadata)
   3) Activate qty=0 listings (quantity=1) using max_price (safety)
   4) Wait N seconds (~3 minutes)
-  5) For each listing in the session:
+  5) For each listing in the session (active now OR activated by us):
         - fetch Backbox competitors
         - persist snapshot + history into pricing_groups.listings[*]
-        - immediately deactivate (quantity=0) IF AND ONLY IF we activated it in this run
-  6) Recompute group-level sell anchors (lowest_gross_price_to_win -> net after fees)
+  6) Deactivate ALL session-activated listings (bulk) AFTER Backbox stage completes
+     (never touch listings that were originally active)
+  7) Recompute group-level sell anchors (lowest_gross_price_to_win -> net after fees)
 
 Safety rules
 ------------
 - Listings active before run (original_quantity > 0) are NEVER deactivated.
 - Listings we failed to activate are NEVER deactivated.
-- If per-listing deactivation fails, we run a final cleanup sweep (deactivate_session).
+- If bulk deactivation fails, we run a final cleanup sweep (deactivate_session).
 
 Rate limiting / learning
 ------------------------
 Every Back Market call includes an endpoint_key so limiter + learner apply automatically.
 Per-request logs (headers/body/status/retries) are produced by transport/client.py when DEBUG enabled.
+
+Why phased?
+-----------
+Cloudflare rate limiting can apply across endpoints. Doing per-listing:
+  GET backbox -> POST listing_update -> GET -> POST -> ...
+interleaves endpoints and creates bursty traffic patterns.
+This module now does:
+  ... POST (activate all) -> GET (backbox all) -> POST (deactivate all)
+so endpoint-specific rate limits work as intended without interleaving.
 """
 
 from __future__ import annotations
@@ -43,7 +53,6 @@ from app.features.backmarket.sell.activation import (
     activate_session,
     create_activation_session_for_user,
     deactivate_session,
-    update_listing_quantity,
 )
 from app.features.backmarket.sell.backbox import (
     fetch_backbox_for_listing,
@@ -84,15 +93,6 @@ def _as_int(v: Any, default: int = 0) -> int:
         return default
 
 
-def _as_float(v: Any) -> Optional[float]:
-    try:
-        if v is None:
-            return None
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def _progress_every(total: int) -> int:
     if total <= 50:
         return 5
@@ -114,11 +114,10 @@ async def _backbox_then_deactivate_per_listing(
     max_parallel_deactivate: int,
 ) -> Dict[str, Any]:
     """
-    Core step:
-      for each listing:
-        fetch backbox -> persist -> deactivate immediately (if needed)
-
-    Updates activation_sessions.listings[] with backbox/deactivation bookkeeping.
+    Phase 5/6:
+      - Fetch Backbox for all eligible listings in the session (concurrently)
+      - Persist snapshots
+      - THEN bulk-deactivate session-activated listings (no endpoint interleaving)
     """
     sessions_col = db[SESSIONS_COL]
     oid = _parse_object_id(session_id)
@@ -144,12 +143,12 @@ async def _backbox_then_deactivate_per_listing(
         }
 
     backbox_sem = asyncio.Semaphore(max(1, int(max_parallel_backbox)))
-    deact_sem = asyncio.Semaphore(max(1, int(max_parallel_deactivate)))
 
     total = len(listings)
     every = _progress_every(total)
     logger.info(
-        "[sell_pricing_cycle] backbox_then_deactivate START user_id=%s session_id=%s total=%d max_parallel_backbox=%d max_parallel_deactivate=%d",
+        "[sell_pricing_cycle] backbox_then_deactivate START user_id=%s session_id=%s total=%d "
+        "max_parallel_backbox=%d max_parallel_deactivate=%d",
         user_id,
         session_id,
         total,
@@ -157,14 +156,11 @@ async def _backbox_then_deactivate_per_listing(
         int(max_parallel_deactivate),
     )
 
-
     processed = 0
     skipped_inactive = 0
     backbox_success = 0
     backbox_failed = 0
     backbox_missing = 0
-    deactivated = 0
-    deactivate_failed = 0
 
     t_total = time.perf_counter()
 
@@ -189,8 +185,6 @@ async def _backbox_then_deactivate_per_listing(
                 "bb_ok": 0,
                 "bb_fail": 1,
                 "bb_missing": 0,
-                "deact_ok": 0,
-                "deact_fail": 0,
             }
 
         if not should_fetch:
@@ -202,17 +196,10 @@ async def _backbox_then_deactivate_per_listing(
                 "bb_ok": 0,
                 "bb_fail": 0,
                 "bb_missing": 0,
-                "deact_ok": 0,
-                "deact_fail": 0,
             }
 
         fetched_at = _now()
         entry["backbox_fetched_at"] = fetched_at
-
-        deactivate_needed = (original_qty == 0) and was_activated
-
-        currency = str(entry.get("currency") or "GBP")
-        max_price = _as_float(entry.get("max_price"))
 
         bb: Optional[Dict[str, Any]] = None
         fetch_error: Optional[str] = None
@@ -243,7 +230,7 @@ async def _backbox_then_deactivate_per_listing(
                 market=market,
             )
         except PyMongoError as exc:
-            # Persistence failure is serious, but we must still proceed to deactivation to stay safe.
+            # Persistence failure is serious, but we still proceed to the bulk deactivate phase.
             persist_error = str(exc)
 
         # ---- Session bookkeeping ----
@@ -260,67 +247,12 @@ async def _backbox_then_deactivate_per_listing(
 
         bb_missing = 1 if (bb is None and fetch_error is None) else 0
 
-        # ---- Immediate deactivation (only if we activated it) ----
-        if not deactivate_needed:
-            return {
-                "processed": 1,
-                "skipped": 0,
-                "bb_ok": bb_ok,
-                "bb_fail": bb_fail,
-                "bb_missing": bb_missing,
-                "deact_ok": 0,
-                "deact_fail": 0,
-            }
-
-        if max_price is None:
-            entry["deactivate_success"] = False
-            entry["last_error"] = "cannot_deactivate_missing_max_price"
-            return {
-                "processed": 1,
-                "skipped": 0,
-                "bb_ok": bb_ok,
-                "bb_fail": bb_fail,
-                "bb_missing": bb_missing,
-                "deact_ok": 0,
-                "deact_fail": 1,
-            }
-
-        entry["deactivate_attempts"] = _as_int(entry.get("deactivate_attempts"), 0) + 1
-
-        async with deact_sem:
-            ok, err = await update_listing_quantity(
-                db=db,
-                user_id=user_id,
-                listing_ref=listing_ref,
-                quantity=0,
-                max_price=float(max_price),
-                currency=currency,
-            )
-
-        if not ok:
-            entry["deactivate_success"] = False
-            entry["last_error"] = err
-            return {
-                "processed": 1,
-                "skipped": 0,
-                "bb_ok": bb_ok,
-                "bb_fail": bb_fail,
-                "bb_missing": bb_missing,
-                "deact_ok": 0,
-                "deact_fail": 1,
-            }
-
-        entry["deactivated"] = True
-        entry["deactivate_success"] = True
-        entry["last_error"] = None
         return {
             "processed": 1,
             "skipped": 0,
             "bb_ok": bb_ok,
             "bb_fail": bb_fail,
             "bb_missing": bb_missing,
-            "deact_ok": 1,
-            "deact_fail": 0,
         }
 
     tasks = [asyncio.create_task(_process_entry(entry)) for entry in listings]
@@ -335,13 +267,11 @@ async def _backbox_then_deactivate_per_listing(
         backbox_success += r["bb_ok"]
         backbox_failed += r["bb_fail"]
         backbox_missing += r["bb_missing"]
-        deactivated += r["deact_ok"]
-        deactivate_failed += r["deact_fail"]
 
         if done % every == 0 or done == total:
             logger.info(
                 "[sell_pricing_cycle] progress user_id=%s session_id=%s done=%d/%d "
-                "bb_ok=%d bb_fail=%d bb_missing=%d deact_ok=%d deact_fail=%d skipped_inactive=%d elapsed=%.3fs",
+                "bb_ok=%d bb_fail=%d bb_missing=%d skipped_inactive=%d elapsed=%.3fs",
                 user_id,
                 session_id,
                 done,
@@ -349,20 +279,19 @@ async def _backbox_then_deactivate_per_listing(
                 backbox_success,
                 backbox_failed,
                 backbox_missing,
-                deactivated,
-                deactivate_failed,
                 skipped_inactive,
                 time.perf_counter() - t_total,
             )
 
+    # Persist session backbox bookkeeping BEFORE deactivation so deactivate_session preserves these fields.
     await sessions_col.update_one(
         {"_id": oid},
         {"$set": {"status": "backbox_completed", "listings": listings, "updated_at": _now()}},
     )
 
     logger.info(
-        "[sell_pricing_cycle] backbox_then_deactivate DONE user_id=%s session_id=%s total=%d processed=%d "
-        "bb_ok=%d bb_fail=%d bb_missing=%d deact_ok=%d deact_fail=%d skipped_inactive=%d elapsed=%.3fs",
+        "[sell_pricing_cycle] backbox DONE user_id=%s session_id=%s total=%d processed=%d "
+        "bb_ok=%d bb_fail=%d bb_missing=%d skipped_inactive=%d elapsed=%.3fs",
         user_id,
         session_id,
         total,
@@ -370,10 +299,30 @@ async def _backbox_then_deactivate_per_listing(
         backbox_success,
         backbox_failed,
         backbox_missing,
-        deactivated,
-        deactivate_failed,
         skipped_inactive,
         time.perf_counter() - t_total,
+    )
+
+    # ---- Bulk deactivation phase (no interleaving with backbox) ----
+    deact_res = await deactivate_session(
+        db,
+        user_id,
+        session_id,
+        max_parallel_updates=max_parallel_deactivate,
+    )
+
+    deactivated = _as_int(deact_res.get("deactivated"), 0)
+    deactivate_failed = _as_int(deact_res.get("failed"), 0)
+
+    logger.info(
+        "[sell_pricing_cycle] deactivate_session DONE user_id=%s session_id=%s attempted=%s deactivated=%s failed=%s skipped=%s elapsed=%.3fs",
+        user_id,
+        session_id,
+        _as_int(deact_res.get("attempted"), 0),
+        deactivated,
+        deactivate_failed,
+        _as_int(deact_res.get("skipped"), 0),
+        float(deact_res.get("elapsed_seconds") or 0.0),
     )
 
     return {
@@ -386,6 +335,10 @@ async def _backbox_then_deactivate_per_listing(
         "backbox_missing": backbox_missing,
         "deactivated": deactivated,
         "deactivate_failed": deactivate_failed,
+        # Extra detail (safe to add; callers can ignore):
+        "deactivate_attempted": _as_int(deact_res.get("attempted"), 0),
+        "deactivate_skipped": _as_int(deact_res.get("skipped"), 0),
+        "deactivate_skip_reasons": deact_res.get("skip_reasons") if isinstance(deact_res, dict) else None,
     }
 
 
@@ -421,7 +374,8 @@ async def run_sell_pricing_cycle_for_user(
     t0 = time.perf_counter()
     try:
         sell_sync_res = await sync_sell_listings_for_user(db, user_id)
-    except Exception as exc:  # last-resort: never 500 the whole cycle for sell sync
+    except Exception as exc:  # noqa: BLE001
+        # last-resort: never 500 the whole cycle for sell sync
         sell_sync_res = {"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}
         logger.error("[sell_pricing_cycle] sell_sync ERROR user_id=%s err=%r", user_id, exc)
     timings["sell_sync"] = time.perf_counter() - t0
@@ -468,7 +422,7 @@ async def run_sell_pricing_cycle_for_user(
     else:
         timings["wait"] = 0.0
 
-    # 5) Backbox per listing -> immediate deactivate
+    # 5/6) Backbox for all -> bulk deactivate (no interleaving)
     t0 = time.perf_counter()
     cleanup_res: Optional[Dict[str, Any]] = None
 
@@ -540,9 +494,9 @@ async def run_sell_pricing_cycle_for_user(
         orders_sync_res = await sync_bm_orders_for_user(
             db,
             user_id=user_id,
-            full=False,          # incremental default
-            page_size=50,        # default in service
-            overlap_seconds=300, # default in service
+            full=False,  # incremental default
+            page_size=50,  # default in service
+            overlap_seconds=300,  # default in service
         )
         logger.info(
             "[sell_pricing_cycle] orders_sync DONE user_id=%s pages=%s fetched=%s upserted_new=%s elapsed=%.3fs",
@@ -659,6 +613,7 @@ async def run_sell_pricing_cycle_for_user(
         "started_at": started_at_dt.isoformat(),
         "finished_at": finished_at_dt.isoformat(),
     }
+
 
 
 

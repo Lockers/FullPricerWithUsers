@@ -27,6 +27,7 @@ class RepairCostsRepo:
         brand: str,
         model: str,
         costs: Dict[str, Any],
+        times: Dict[str, Any],
         notes: Optional[str],
     ) -> Dict[str, Any]:
         now = _now_utc()
@@ -41,6 +42,7 @@ class RepairCostsRepo:
                 "brand": brand,
                 "model": model,
                 "costs": costs,
+                "times": times,
                 "notes": notes,
                 "updated_at": now,
             },
