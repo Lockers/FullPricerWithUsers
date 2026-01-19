@@ -1,5 +1,4 @@
-"""
-Rate controller (glue code).
+"""Rate controller (glue code).
 
 Owns:
 - per-endpoint in-memory limiters
@@ -29,6 +28,8 @@ import logging
 import time
 from typing import Dict, Tuple
 
+import anyio
+from anyio import CapacityLimiter
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.features.backmarket.transport.endpoints import endpoint_config
@@ -41,11 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 class RateController:
-    """
-    Per-user rate controller.
-
-    This class is intended to be created per user_id and reused for many calls.
-    """
+    """Per-user adaptive rate controller."""
 
     def __init__(
         self,
@@ -61,6 +58,7 @@ class RateController:
         # In-memory caches
         self._states: Dict[str, EndpointRateState] = {}
         self._limiters: Dict[str, SimpleRateLimiter] = {}
+        self._concurrency_limiters: Dict[str, CapacityLimiter] = {}
 
         # Per-endpoint state mutation locks
         self._locks: Dict[str, asyncio.Lock] = {}
@@ -70,37 +68,29 @@ class RateController:
         self._last_refresh: Dict[str, float] = {}
 
     def endpoint_lock(self, endpoint_key: str) -> asyncio.Lock:
-        """
-        Get/create the per-endpoint lock.
+        """Get/create the per-endpoint lock."""
 
-        Transport should use:
-            async with rate_controller.endpoint_lock(endpoint_key):
-                ... mutate state + persist ...
-        """
         lock = self._locks.get(endpoint_key)
         if lock is None:
             lock = asyncio.Lock()
             self._locks[endpoint_key] = lock
         return lock
 
-    async def prepare(self, endpoint_key: str) -> Tuple[EndpointRateState, SimpleRateLimiter]:
-        """
-        Load state (cached) and return the limiter (cached) for this endpoint.
+    async def prepare(self, endpoint_key: str) -> Tuple[EndpointRateState, SimpleRateLimiter, CapacityLimiter]:
+        """Load state (cached) and return the limiters (cached) for this endpoint.
 
         Refresh behavior:
         - State is cached in-memory for performance.
         - Every `refresh_interval_seconds`, we re-load from Mongo to pick up
           changes from other worker processes.
         """
-        # Per-endpoint lock ensures only one coroutine at a time loads/refreshes.
+
         async with self.endpoint_lock(endpoint_key):
             state = self._states.get(endpoint_key)
 
             now_m = time.monotonic()
             last = self._last_refresh.get(endpoint_key, 0.0)
-            needs_refresh = (state is None) or (
-                    0 < self._refresh_interval <= (now_m - last)
-            )
+            needs_refresh = (state is None) or (0 < self._refresh_interval <= (now_m - last))
 
             if needs_refresh:
                 cfg = endpoint_config(endpoint_key)
@@ -109,48 +99,67 @@ class RateController:
                 self._last_refresh[endpoint_key] = now_m
 
                 logger.info(
-                    "[rate_controller] state_load user_id=%s endpoint=%s current_rps=%s locked_rps=%s "
-                    "rps_float=%.3f cooldown_until=%s updated_at=%s",
+                    "[rate_controller] state_load user_id=%s endpoint=%s rps=%s locked_rps=%s rps_float=%.3f "
+                    "conc=%s locked_conc=%s conc_float=%.3f cooldown_until=%s updated_at=%s",
                     self.user_id,
                     endpoint_key,
                     state.current_rps,
                     state.locked_rps,
                     float(state.rps_float),
+                    state.current_concurrency,
+                    state.locked_concurrency,
+                    float(state.concurrency_float),
                     state.cooldown_until,
                     state.updated_at,
                 )
 
+            # RPS limiter
             limiter = self._limiters.get(endpoint_key)
             if limiter is None:
-                limiter = SimpleRateLimiter(max_calls=state.current_rps, period=1.0, name=endpoint_key)
+                limiter = SimpleRateLimiter(max_calls=float(state.current_rps), period=1.0, name=endpoint_key)
                 self._limiters[endpoint_key] = limiter
             else:
-                limiter.update_max_calls(state.current_rps)
+                limiter.update_max_calls(float(state.current_rps))
 
-            return state, limiter
+            # Concurrency limiter (anyio CapacityLimiter)
+            conc = self._concurrency_limiters.get(endpoint_key)
+            if conc is None:
+                conc = anyio.CapacityLimiter(max(1, int(state.current_concurrency)))
+                self._concurrency_limiters[endpoint_key] = conc
+            else:
+                # If borrowed_tokens > total_tokens, anyio allows shrinking; new
+                # borrowers will block until releases bring it under the cap.
+                conc.total_tokens = max(1, int(state.current_concurrency))
+
+            return state, limiter, conc
 
     async def persist(self, state: EndpointRateState) -> None:
         """Persist the state to Mongo."""
+
         await self._repo.save(state)
 
     def _apply(self, state: EndpointRateState, *, reason: str) -> None:
-        """
-        Clamp/recompute state and propagate changes into the in-memory limiter.
+        """Clamp/recompute state and propagate changes into in-memory limiters."""
 
-        Logs at INFO only when the integer RPS changes (to avoid spam).
-        """
-        old_rps = int(state.current_rps)
+        old_rps = float(state.current_rps)
+        old_conc = int(state.current_concurrency)
 
         state.clamp_and_recompute()
 
-        new_rps = int(state.current_rps)
+        new_rps = float(state.current_rps)
+        new_conc = int(state.current_concurrency)
+
         limiter = self._limiters.get(state.endpoint_key)
         if limiter is not None:
-            limiter.update_max_calls(new_rps)
+            limiter.update_max_calls(float(new_rps))
 
-        if new_rps != old_rps:
+        conc = self._concurrency_limiters.get(state.endpoint_key)
+        if conc is not None:
+            conc.total_tokens = max(1, int(new_conc))
+
+        if abs(new_rps - old_rps) > 1e-9:
             logger.info(
-                "[rate_controller] rps_change user_id=%s endpoint=%s reason=%s %d -> %d locked_rps=%s rps_float=%.3f",
+                "[rate_controller] rps_change user_id=%s endpoint=%s reason=%s %.3f -> %.3f locked_rps=%s rps_float=%.3f",
                 state.user_id,
                 state.endpoint_key,
                 reason,
@@ -158,6 +167,18 @@ class RateController:
                 new_rps,
                 state.locked_rps,
                 float(state.rps_float),
+            )
+
+        if new_conc != old_conc:
+            logger.info(
+                "[rate_controller] conc_change user_id=%s endpoint=%s reason=%s %d -> %d locked_conc=%s conc_float=%.3f",
+                state.user_id,
+                state.endpoint_key,
+                reason,
+                old_conc,
+                new_conc,
+                state.locked_concurrency,
+                float(state.concurrency_float),
             )
 
     def on_success(self, state: EndpointRateState, status_code: int) -> None:
@@ -181,36 +202,47 @@ class RateController:
     # ---------------------------------------------------------------------
 
     async def get_state(self, user_id: str, endpoint_key: str, *args) -> EndpointRateState:
-        """
-        Backwards-compatible alias for older call sites.
+        """Backwards-compatible alias for older call sites."""
 
-        Notes:
-        - RateController is per-user, so `user_id` is redundant; we accept it to
-          avoid breaking older code.
-        """
         _ = args
         if user_id != self.user_id:
             logger.debug("[rate_controller] get_state user_id mismatch got=%s expected=%s", user_id, self.user_id)
-        state, _limiter = await self.prepare(endpoint_key)
+        state, _limiter, _conc = await self.prepare(endpoint_key)
         return state
 
     async def get_limiter(self, user_id: str, endpoint_key: str, *args) -> SimpleRateLimiter:
         """Backwards-compatible alias for older call sites."""
+
         _ = args
         if user_id != self.user_id:
             logger.debug("[rate_controller] get_limiter user_id mismatch got=%s expected=%s", user_id, self.user_id)
-        _state, limiter = await self.prepare(endpoint_key)
+        _state, limiter, _conc = await self.prepare(endpoint_key)
         return limiter
 
+    async def get_concurrency_limiter(self, endpoint_key: str) -> CapacityLimiter:
+        """Return the per-endpoint concurrency limiter.
+
+        Prefer using `prepare()` in the transport client (it creates the limiter
+        if missing).
+        """
+
+        _state, _rps_limiter, conc = await self.prepare(endpoint_key)
+        return conc
+
     def update_limiter(self, endpoint_key: str) -> None:
-        """
-        Backwards-compatible helper used by some older code paths.
+        """Backwards-compatible helper used by some older code paths.
 
-        Re-syncs limiter max_calls from the cached state (if present).
+        Re-syncs limiter max_calls + concurrency from the cached state (if present).
         """
+
         state = self._states.get(endpoint_key)
-        limiter = self._limiters.get(endpoint_key)
-        if state is None or limiter is None:
+        if state is None:
             return
-        limiter.update_max_calls(int(state.current_rps))
 
+        limiter = self._limiters.get(endpoint_key)
+        if limiter is not None:
+            limiter.update_max_calls(float(state.current_rps))
+
+        conc = self._concurrency_limiters.get(endpoint_key)
+        if conc is not None:
+            conc.total_tokens = max(1, int(state.current_concurrency))

@@ -5,12 +5,15 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="ab81581d-5ab0-4032-b9de-6cf9f47ea119" name="Changes" comment="Version 0.96 added deprecitation model based on orders">
+      <change beforePath="$PROJECT_DIR$/.env" beforeDir="false" afterPath="$PROJECT_DIR$/.env" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/sell/pricing_cycle.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/repaircost/pricing_groups_sync.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/pricing_groups_sync.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/repaircost/repo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/repo.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/repaircost/schemas.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/schemas.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/features/repaircost/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/repaircost/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/rate/controller.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/rate/controller.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/rate/learner.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/rate/learner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/rate/limiter.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/rate/limiter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/rate/repo.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/rate/repo.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/rate/state.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/rate/state.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/transport/client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/features/backmarket/transport/endpoints.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -143,6 +146,13 @@
       <workItem from="1768652746150" duration="1428000" />
       <workItem from="1768782413094" duration="462000" />
       <workItem from="1768813305728" duration="2164000" />
+      <workItem from="1768815521008" duration="3953000" />
+      <workItem from="1768821238295" duration="1773000" />
+      <workItem from="1768823254812" duration="3164000" />
+      <workItem from="1768829321450" duration="6222000" />
+      <workItem from="1768840906288" duration="829000" />
+      <workItem from="1768841750636" duration="289000" />
+      <workItem from="1768842075451" duration="3273000" />
     </task>
     <task id="LOCAL-00001" summary="First commit">
       <option name="closed" value="true" />
@@ -232,7 +242,15 @@
       <option name="project" value="LOCAL" />
       <updated>1768762027697</updated>
     </task>
-    <option name="localTasksCounter" value="12" />
+    <task id="LOCAL-00012" summary="Version 0.96 added deprecitation model based on orders">
+      <option name="closed" value="true" />
+      <created>1768815817937</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1768815817937</updated>
+    </task>
+    <option name="localTasksCounter" value="13" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

@@ -7,9 +7,10 @@ Responsibilities
 ----------------
 - Build Back Market auth headers for a user
 - Apply per-endpoint rate limiting (via :class:`RateController`)
+- Apply per-endpoint concurrency limiting (in-flight requests)
 - Apply circuit breaking (per endpoint) to avoid thundering-herd failures
 - Retry transient failures with backoff
-- Log enough context to debug rate behaviour (RPS, limiter wait, cf-ray, ...)
+- Log enough context to debug rate behaviour (RPS, concurrency, limiter wait, cf-ray, ...)
 
 Non-responsibilities
 --------------------
@@ -88,14 +89,13 @@ class BackMarketClient:
         self.user_id = user_id
         self._db = db
 
-        # Prefer explicit base_url, else env var, else raise.
         # Prefer explicit base_url, else env var, else sane default.
         resolved_base_url = (
-                (base_url or "").strip()
-                or (os.environ.get("BM_API_BASE_URL") or "").strip()
-                or (os.environ.get("BACKMARKET_BASE_URL") or "").strip()
-                or (os.environ.get("BACKMARKET_API_BASE_URL") or "").strip()
-                or "https://www.backmarket.co.uk"
+            (base_url or "").strip()
+            or (os.environ.get("BM_API_BASE_URL") or "").strip()
+            or (os.environ.get("BACKMARKET_BASE_URL") or "").strip()
+            or (os.environ.get("BACKMARKET_API_BASE_URL") or "").strip()
+            or "https://www.backmarket.co.uk"
         )
 
         self._base_url = resolved_base_url.rstrip("/")
@@ -111,15 +111,20 @@ class BackMarketClient:
         # Per-endpoint circuit breakers.
         self._breakers: Dict[str, CircuitBreaker] = {}
 
-        client_kwargs: Dict[str, Any] = {"base_url": self._base_url, "timeout": self._timeout_seconds,
-                                         "limits": httpx.Limits(max_keepalive_connections=0)}
-
-        # Disable keepalive connections (helps with rotating proxies).
+        # NOTE: keepalive is disabled to help with rotating proxies. If you are
+        # *not* rotating proxies, you may want to increase keepalive for better
+        # performance and fewer TCP handshakes.
+        client_kwargs: Dict[str, Any] = {
+            "base_url": self._base_url,
+            "timeout": self._timeout_seconds,
+            "limits": httpx.Limits(max_keepalive_connections=0),
+        }
 
         if proxy_url:
             # httpx has changed proxy kwargs across versions.
             proxies = {
                 "http://": proxy_url,
+                "https://": proxy_url,
             }
             client_kwargs["proxies"] = proxies
 
@@ -165,7 +170,7 @@ class BackMarketClient:
         extra_headers: Optional[Dict[str, str]] = None,
         raise_for_status: bool = False,
     ) -> httpx.Response:
-        """Send a request with rate limiting, retries, and circuit breaking."""
+        """Send a request with rate limiting, concurrency limiting, retries, and circuit breaking."""
 
         # Ensure the endpoint exists (also prevents typos silently using defaults).
         endpoint_config(endpoint_key)
@@ -173,9 +178,9 @@ class BackMarketClient:
         attempts_total = max(1, int(max_attempts or self._max_attempts))
         req_id = uuid.uuid4().hex
 
-        # ✅ Guard: rate controller prepare must never hang forever
+        # Guard: rate controller prepare must never hang forever.
         try:
-            state, limiter = await asyncio.wait_for(
+            state, rps_limiter, conc_limiter = await asyncio.wait_for(
                 self._rates.prepare(endpoint_key),
                 timeout=15.0,
             )
@@ -254,14 +259,24 @@ class BackMarketClient:
                 await asyncio.sleep(wait_s)
                 continue
 
-            # Rate limiter gate.
+            # ------------------------------------------------------------------
+            # Concurrency gate (in-flight requests)
+            #
+            # IMPORTANT: do NOT wrap anyio.CapacityLimiter.acquire() in
+            # asyncio.wait_for(), because anyio associates tokens with the
+            # *calling task*; wait_for creates a new task which would leak tokens.
+            # ------------------------------------------------------------------
+            conc_t0 = time.monotonic()
             try:
-                limiter_wait = await asyncio.wait_for(limiter.acquire(), timeout=60.0)
-            except asyncio.TimeoutError:
-                # ✅ Avoid silent freeze if limiter is wedged or rps is effectively 0.
+                with anyio.fail_after(60.0):
+                    await conc_limiter.acquire()
+            except TimeoutError as exc:
+                last_exc = exc
+                conc_wait = time.monotonic() - conc_t0
+                wait_s = backoff_seconds(max(1, http_attempt + 1))
                 logger.error(
-                    "[bm_request] LIMITER_ACQUIRE_TIMEOUT req_id=%s user_id=%s endpoint=%s method=%s path=%s "
-                    "attempt=%d/%d -> bypassing limiter",
+                    "[bm_request] CONCURRENCY_ACQUIRE_TIMEOUT req_id=%s user_id=%s endpoint=%s method=%s path=%s "
+                    "attempt=%d/%d rps=%s locked=%s conc=%s locked_conc=%s conc_wait=%.3fs backoff=%.3fs",
                     req_id,
                     self.user_id,
                     endpoint_key,
@@ -269,21 +284,57 @@ class BackMarketClient:
                     path,
                     http_attempt + 1,
                     attempts_total,
+                    state.current_rps,
+                    state.locked_rps,
+                    state.current_concurrency,
+                    state.locked_concurrency,
+                    conc_wait,
+                    wait_s,
                 )
-                limiter_wait = 0.0
+                await asyncio.sleep(wait_s)
+                continue
 
-            http_attempt += 1
+            conc_wait = time.monotonic() - conc_t0
 
-            # Build headers.
-            auth_headers = await self._headers.build_headers(self.user_id, endpoint_key)
-            headers: Dict[str, str] = dict(auth_headers)
-            if extra_headers:
-                headers.update(extra_headers)
-
-            timeout = float(timeout_seconds or self._timeout_seconds)
-
+            # We now hold a concurrency token; release as soon as the HTTP attempt
+            # finishes (success or error). Do not hold while sleeping/backing off.
+            limiter_wait = 0.0
+            resp: Optional[httpx.Response] = None
+            request_exc: Optional[Exception] = None
+            headers: Dict[str, str] = {}
             t0 = time.monotonic()
+            elapsed = 0.0
+
             try:
+                # Rate limiter gate.
+                try:
+                    limiter_wait = await asyncio.wait_for(rps_limiter.acquire(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    # Avoid silent freeze if limiter is wedged or rps is effectively 0.
+                    logger.error(
+                        "[bm_request] LIMITER_ACQUIRE_TIMEOUT req_id=%s user_id=%s endpoint=%s method=%s path=%s "
+                        "attempt=%d/%d -> bypassing limiter",
+                        req_id,
+                        self.user_id,
+                        endpoint_key,
+                        method,
+                        path,
+                        http_attempt + 1,
+                        attempts_total,
+                    )
+                    limiter_wait = 0.0
+
+                http_attempt += 1
+
+                # Build headers.
+                auth_headers = await self._headers.build_headers(self.user_id, endpoint_key)
+                headers = dict(auth_headers)
+                if extra_headers:
+                    headers.update(extra_headers)
+
+                timeout = float(timeout_seconds or self._timeout_seconds)
+
+                t0 = time.monotonic()
                 resp = await self._client.request(
                     method=method,
                     url=path,
@@ -292,9 +343,30 @@ class BackMarketClient:
                     headers=headers,
                     timeout=timeout,
                 )
+                elapsed = time.monotonic() - t0
+
             except (httpx.TransportError, ssl.SSLError, anyio.ClosedResourceError) as exc:
+                request_exc = exc
+                resp = None
+                elapsed = time.monotonic() - t0
+
+            finally:
+                # Release concurrency token (even if limiter/request errored).
+                try:
+                    conc_limiter.release()
+                except RuntimeError:
+                    # This should never happen; if it does, surface loudly to avoid deadlocks.
+                    logger.exception(
+                        "[bm_request] CONCURRENCY_RELEASE_FAILED req_id=%s user_id=%s endpoint=%s",
+                        req_id,
+                        self.user_id,
+                        endpoint_key,
+                    )
+                    raise
+
+            if request_exc is not None:
                 # No response. Treat as retryable.
-                last_exc = exc
+                last_exc = request_exc
 
                 await breaker.after_failure()
 
@@ -306,7 +378,8 @@ class BackMarketClient:
                 wait_s = backoff_seconds(http_attempt)
                 logger.warning(
                     "[bm_request] TRANSPORT_ERROR req_id=%s user_id=%s endpoint=%s method=%s path=%s "
-                    "attempt=%d/%d rps=%s locked=%s limiter_wait=%.3fs wait=%.3fs err=%r headers=%s",
+                    "attempt=%d/%d rps=%s locked=%s conc=%s locked_conc=%s conc_wait=%.3fs limiter_wait=%.3fs "
+                    "elapsed=%.3fs wait=%.3fs err=%r headers=%s",
                     req_id,
                     self.user_id,
                     endpoint_key,
@@ -316,15 +389,19 @@ class BackMarketClient:
                     attempts_total,
                     state.current_rps,
                     state.locked_rps,
+                    state.current_concurrency,
+                    state.locked_concurrency,
+                    conc_wait,
                     limiter_wait,
+                    elapsed,
                     wait_s,
-                    exc,
+                    request_exc,
                     redact_headers(headers),
                 )
                 await asyncio.sleep(wait_s)
                 continue
 
-            elapsed = time.monotonic() - t0
+            assert resp is not None
 
             status = resp.status_code
             cf_ray = resp.headers.get("cf-ray") or resp.headers.get("CF-Ray")
@@ -341,7 +418,8 @@ class BackMarketClient:
 
                 logger.info(
                     "[bm_request] OK req_id=%s user_id=%s endpoint=%s method=%s path=%s status=%s "
-                    "attempt=%d/%d rps=%s locked=%s limiter_wait=%.3fs elapsed=%.3fs cf_ray=%s",
+                    "attempt=%d/%d rps=%s locked=%s conc=%s locked_conc=%s conc_wait=%.3fs limiter_wait=%.3fs "
+                    "elapsed=%.3fs cf_ray=%s",
                     req_id,
                     self.user_id,
                     endpoint_key,
@@ -352,6 +430,9 @@ class BackMarketClient:
                     attempts_total,
                     state.current_rps,
                     state.locked_rps,
+                    state.current_concurrency,
+                    state.locked_concurrency,
+                    conc_wait,
                     limiter_wait,
                     elapsed,
                     cf_ray,
@@ -373,8 +454,8 @@ class BackMarketClient:
                 snippet = read_response_snippet(resp)
                 logger.warning(
                     "[bm_request] RATE_LIMITED req_id=%s user_id=%s endpoint=%s method=%s path=%s status=%s "
-                    "attempt=%d/%d rps=%s locked=%s limiter_wait=%.3fs elapsed=%.3fs wait=%.3fs cf_ray=%s "
-                    "body=%s",
+                    "attempt=%d/%d rps=%s locked=%s conc=%s locked_conc=%s conc_wait=%.3fs limiter_wait=%.3fs "
+                    "elapsed=%.3fs wait=%.3fs cf_ray=%s body=%s",
                     req_id,
                     self.user_id,
                     endpoint_key,
@@ -385,6 +466,9 @@ class BackMarketClient:
                     attempts_total,
                     state.current_rps,
                     state.locked_rps,
+                    state.current_concurrency,
+                    state.locked_concurrency,
+                    conc_wait,
                     limiter_wait,
                     elapsed,
                     wait_s,
@@ -408,8 +492,8 @@ class BackMarketClient:
 
                 logger.warning(
                     "[bm_request] SERVER_ERROR req_id=%s user_id=%s endpoint=%s method=%s path=%s status=%s "
-                    "attempt=%d/%d rps=%s locked=%s limiter_wait=%.3fs elapsed=%.3fs wait=%.3fs cf_ray=%s "
-                    "body=%s",
+                    "attempt=%d/%d rps=%s locked=%s conc=%s locked_conc=%s conc_wait=%.3fs limiter_wait=%.3fs "
+                    "elapsed=%.3fs wait=%.3fs cf_ray=%s body=%s",
                     req_id,
                     self.user_id,
                     endpoint_key,
@@ -420,6 +504,9 @@ class BackMarketClient:
                     attempts_total,
                     state.current_rps,
                     state.locked_rps,
+                    state.current_concurrency,
+                    state.locked_concurrency,
+                    conc_wait,
                     limiter_wait,
                     elapsed,
                     wait_s,
@@ -440,7 +527,8 @@ class BackMarketClient:
             snippet = read_response_snippet(resp)
             logger.warning(
                 "[bm_request] CLIENT_ERROR req_id=%s user_id=%s endpoint=%s method=%s path=%s status=%s "
-                "attempt=%d/%d rps=%s locked=%s limiter_wait=%.3fs elapsed=%.3fs cf_ray=%s body=%s",
+                "attempt=%d/%d rps=%s locked=%s conc=%s locked_conc=%s conc_wait=%.3fs limiter_wait=%.3fs "
+                "elapsed=%.3fs cf_ray=%s body=%s",
                 req_id,
                 self.user_id,
                 endpoint_key,
@@ -451,6 +539,9 @@ class BackMarketClient:
                 attempts_total,
                 state.current_rps,
                 state.locked_rps,
+                state.current_concurrency,
+                state.locked_concurrency,
+                conc_wait,
                 limiter_wait,
                 elapsed,
                 cf_ray,
@@ -505,3 +596,4 @@ class BackMarketClient:
             params=params,
             timeout_seconds=timeout_seconds,
         )
+

@@ -69,6 +69,11 @@ class BmRateStateRepository:
         - Uses $setOnInsert so an existing record is never overwritten by defaults.
         - Uses a deterministic `sort` (prefer newest updated_at) to reduce weirdness
           if duplicates exist.
+
+        IMPORTANT:
+        - Mongo does not allow updating the same field in both $setOnInsert and $set.
+          Therefore, any fields we want to *always* sync from code config MUST NOT
+          also appear in $setOnInsert.
         """
 
         now = datetime.now(timezone.utc)
@@ -76,12 +81,25 @@ class BmRateStateRepository:
         defaults = EndpointRateState(
             user_id=user_id,
             endpoint_key=endpoint_key,
+
+            # RPS
             base_rps=cfg.base_rps,
             min_rps=cfg.min_rps,
             max_rps=cfg.max_rps,
+
+            # Concurrency
+            base_concurrency=cfg.base_concurrency,
+            min_concurrency=cfg.min_concurrency,
+            max_concurrency=cfg.max_concurrency,
+
+            # Learned
             rps_float=float(cfg.base_rps),
-            current_rps=int(cfg.base_rps),
+            concurrency_float=float(cfg.base_concurrency),
+            current_rps=float(cfg.base_rps),
+            current_concurrency=int(cfg.base_concurrency),
+
             locked_rps=None,
+            locked_concurrency=None,
             cooldown_until=None,
             consecutive_successes=0,
             consecutive_429s=0,
@@ -92,13 +110,40 @@ class BmRateStateRepository:
         )
         defaults.clamp_and_recompute()
 
+        # Build the insert-only doc, but REMOVE config fields that we also $set below.
+        insert_doc = defaults.to_mongo()
+        for k in (
+            "base_rps",
+            "min_rps",
+            "max_rps",
+            "base_concurrency",
+            "min_concurrency",
+            "max_concurrency",
+        ):
+            insert_doc.pop(k, None)
+
         # Prefer most recently updated doc if duplicates exist.
         sort = [("updated_at", -1), ("_id", -1)]
 
         try:
             doc = await self._col.find_one_and_update(
                 {"user_id": user_id, "endpoint_key": endpoint_key},
-                {"$setOnInsert": defaults.to_mongo()},
+                {
+                    # Insert defaults only on first creation.
+                    "$setOnInsert": insert_doc,
+
+                    # Always keep the static config fields in sync with code.
+                    # This avoids stale floors/ceilings preventing adaptation
+                    # (especially important for fractional RPS experiments).
+                    "$set": {
+                        "base_rps": float(cfg.base_rps),
+                        "min_rps": float(cfg.min_rps),
+                        "max_rps": float(cfg.max_rps),
+                        "base_concurrency": int(cfg.base_concurrency),
+                        "min_concurrency": int(cfg.min_concurrency),
+                        "max_concurrency": int(cfg.max_concurrency),
+                    },
+                },
                 upsert=True,
                 sort=sort,
                 return_document=ReturnDocument.AFTER,
@@ -130,7 +175,6 @@ class BmRateStateRepository:
             upsert=True,
         )
 
-        # Motor returns an UpdateResult with matched_count.
         matched_raw = getattr(res, "matched_count", 0) or 0
         matched = int(matched_raw) if isinstance(matched_raw, int) else 0
 
@@ -142,3 +186,4 @@ class BmRateStateRepository:
                 state.endpoint_key,
                 matched,
             )
+
