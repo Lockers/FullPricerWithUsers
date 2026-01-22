@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -11,6 +11,28 @@ from .types import MultiplierScope
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc_datetime(v: Any) -> datetime:
+    """
+    Mongo BSON cannot encode datetime.date. Convert to timezone-aware datetime.
+    Accepts:
+      - datetime (kept, ensured tz)
+      - date (converted to 00:00:00 UTC)
+      - ISO string (YYYY-MM-DD or full ISO datetime)
+    """
+    if isinstance(v, datetime):
+        return v if v.tzinfo is not None else v.replace(tzinfo=timezone.utc)
+
+    if isinstance(v, date):
+        return datetime(v.year, v.month, v.day, tzinfo=timezone.utc)
+
+    if isinstance(v, str):
+        # Handles "YYYY-MM-DD" and full ISO strings
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    raise TypeError(f"Unsupported release_date type: {type(v)!r}")
 
 
 def default_weight(n: int) -> float:
@@ -26,7 +48,7 @@ async def upsert_depreciation_model(
     brand: str,
     model: str,
     storage_gb: int,
-    release_date,
+    release_date: Any,
     msrp_amount: float,
     currency: str,
     segment: str,
@@ -41,9 +63,12 @@ async def upsert_depreciation_model(
         "model": model,
         "storage_gb": storage_gb,
     }
+
+    release_dt = _as_utc_datetime(release_date)
+
     update = {
         "$set": {
-            "release_date": release_date,
+            "release_date": release_dt,  # <-- datetime, BSON-safe
             "msrp_amount": float(msrp_amount),
             "currency": currency,
             "segment": segment,
@@ -51,6 +76,7 @@ async def upsert_depreciation_model(
         },
         "$setOnInsert": {"created_at": now},
     }
+
     await col.update_one(filt, update, upsert=True)
     doc = await col.find_one(filt)
     return doc  # type: ignore[return-value]
@@ -160,3 +186,4 @@ async def update_multiplier_log_ewma(
         "applied_weight": w,
         "target_multiplier": target_multiplier,
     }
+

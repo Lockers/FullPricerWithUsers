@@ -133,3 +133,52 @@ def parse_sku(sku: str) -> Tuple[str, str, int, Grade]:
         model = "-".join(model_tokens).upper()
 
     return brand, model, storage_gb, grade
+
+
+_SPACE_RE = re.compile(r"\s+")
+_STORAGE_RE = re.compile(r"\b(\d{2,4})\s*GB\b", re.I)
+
+def canonicalize_device(brand: str, model: str, storage_gb: int) -> Tuple[str, str, int]:
+    b = (brand or "").strip().upper()
+    m = (model or "").strip().upper()
+    m = _SPACE_RE.sub(" ", m).strip()
+
+    # Apple / iPhone normalization
+    if b in {"IPHONE", "APPLE"}:
+        b = "APPLE"
+        if not m.startswith("IPHONE"):
+            m = f"IPHONE {m}".strip()
+
+    # Google / Pixel normalization
+    if b in {"PIXEL", "GOOGLE"}:
+        b = "GOOGLE"
+        if "PIXEL" not in m:
+            m = f"PIXEL {m}".strip()
+
+    return b, m, int(storage_gb)
+
+
+def parse_from_product(brand_hint: str, product: str) -> Tuple[str, str, int]:
+    p = str(product or "").strip()
+    if not p:
+        raise ValueError("missing product")
+
+    m = _STORAGE_RE.search(p)
+    if not m:
+        raise ValueError("no storage token in product")
+    storage_gb = int(m.group(1))
+
+    before_storage = p[: m.start()].strip()  # e.g. "iPhone 15 Plus"
+    model = _SPACE_RE.sub(" ", before_storage).strip().upper()
+
+    brand = str(brand_hint or "").strip().upper()
+
+    # If brand hint is missing, infer minimally
+    if not brand:
+        if "IPHONE" in model or model.startswith("IPHONE"):
+            brand = "APPLE"
+        elif "PIXEL" in model:
+            brand = "GOOGLE"
+
+    return canonicalize_device(brand, model, storage_gb)
+

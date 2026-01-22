@@ -199,3 +199,44 @@ class ObserveFromOrderResponse(BaseModel):
     order_id: str
     observed_at: datetime
     results: list[DepreciationObserveResponse]
+
+class DepreciationCatalogItem(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    device_key: str
+
+    market: str
+    brand: str
+    model: str
+    storage_gb: int
+    currency: str
+
+    segment: Segment
+    seeded: bool
+
+    release_date: Optional[date] = None
+    msrp_amount: Optional[float] = None
+
+    as_of_date: date
+    grade: Grade
+
+    age_months: Optional[float] = None
+
+    multiplier: float
+    multiplier_source: str
+    multiplier_n: int = 0
+    multiplier_updated_at: Optional[datetime] = None
+
+    predicted_excellent: Optional[float] = None
+    predicted_good: Optional[float] = None
+    predicted_fair: Optional[float] = None
+    predicted_for_grade: Optional[float] = None
+
+    pricing_group_count: int = 0
+    model_updated_at: Optional[datetime] = None
+
+
+class DepreciationCatalogResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    items: list[DepreciationCatalogItem]

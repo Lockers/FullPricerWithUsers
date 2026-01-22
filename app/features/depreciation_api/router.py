@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import math
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -31,6 +33,8 @@ from .schemas import (
     ObserveFromOrderlineResponse,
     ObserveFromOrderRequest,
     ObserveFromOrderResponse,
+    DepreciationCatalogItem,
+    DepreciationCatalogResponse,
 )
 from .service import (
     derive_segment,
@@ -44,6 +48,10 @@ from .service import (
 from .types import Grade, MultiplierScope, Segment
 
 router = APIRouter(prefix="/depreciation", tags=["depreciation"])
+
+_RE_STORAGE_GB = re.compile(r"\b(\d{2,4})\s*GB\b", re.IGNORECASE)
+_RE_MULTI_SPACE = re.compile(r"\s+")
+_RE_STRIP_QUALIFIERS = re.compile(r"\b(UNLOCKED|SIM\s*FREE|SIMFREE)\b", re.IGNORECASE)
 
 
 def _now_dt() -> datetime:
@@ -108,6 +116,17 @@ def _extract_listing_sku(d: Dict[str, Any]) -> str:
     return str(sku or "").strip()
 
 
+def _extract_product_name(d: Dict[str, Any]) -> str:
+    p = d.get("product") or d.get("product_name") or d.get("productName") or ""
+    return str(p or "").strip()
+
+
+def _extract_brand_hint(d: Dict[str, Any]) -> str:
+    # bm_orders orderlines include "brand" (e.g. "Apple", "Samsung", "Google")
+    b = d.get("brand") or d.get("manufacturer") or d.get("brand_name") or ""
+    return str(b or "").strip()
+
+
 def _extract_price(d: Dict[str, Any]) -> Optional[float]:
     # BM payload uses `price` on orderline; your bridge sometimes uses `unit_price`
     raw = d.get("price")
@@ -154,6 +173,76 @@ def _segment_from_doc_value(seg_val: Any, *, fallback: Segment) -> Segment:
         return Segment(str(seg_val))
     except (ValueError, TypeError):
         return fallback
+
+
+def _norm_spaces(s: str) -> str:
+    return _RE_MULTI_SPACE.sub(" ", str(s or "")).strip()
+
+
+def _parse_device_from_product(*, product: str, brand_hint: str) -> Tuple[str, str, int]:
+    """
+    Fallback parser for orderlines where listing SKU format changed or is missing.
+    Example:
+      product: "iPhone 15 Plus 128GB - Black - Unlocked"
+      brand_hint: "Apple"
+    -> ("IPHONE", "15 PLUS", 128)
+    """
+    p = str(product or "").strip()
+    if not p:
+        raise ValueError("missing product")
+
+    # Prefer the segment before " - " (typically model+storage).
+    main = p.split(" - ")[0].strip()
+
+    m = _RE_STORAGE_GB.search(main) or _RE_STORAGE_GB.search(p)
+    if not m:
+        raise ValueError("missing storage token in product")
+
+    storage_gb = int(m.group(1))
+
+    # Remove storage and normalize spaces.
+    main_no_storage = _RE_STORAGE_GB.sub("", main).strip()
+    main_no_storage = _norm_spaces(main_no_storage)
+
+    upper_main = main_no_storage.upper()
+    bh = str(brand_hint or "").strip()
+    bh_upper = bh.upper()
+
+    # Special-cases where listing SKUs typically use a family token rather than manufacturer.
+    if upper_main.startswith("IPHONE"):
+        brand = "IPHONE"
+        model = main_no_storage[len("IPHONE") :].strip()
+    elif upper_main.startswith("IPAD"):
+        brand = "IPAD"
+        model = main_no_storage[len("IPAD") :].strip()
+    else:
+        # Default: use manufacturer brand hint if we have it.
+        brand = bh_upper
+        model = main_no_storage
+
+        # If the product starts with the manufacturer (e.g. "Samsung Galaxy S21"),
+        # strip it so model aligns with listing SKU model tokens.
+        if bh_upper and upper_main.startswith(bh_upper):
+            model = _norm_spaces(main_no_storage[len(bh) :].strip())
+
+        if not brand:
+            # Minimal inference if brand hint missing.
+            if "PIXEL" in upper_main:
+                brand = "GOOGLE"
+            elif "GALAXY" in upper_main:
+                brand = "SAMSUNG"
+            else:
+                brand = (upper_main.split(" ")[0] if upper_main else "UNKNOWN")
+
+    # Strip common qualifiers if product strings don't use " - " separation.
+    model = _RE_STRIP_QUALIFIERS.sub("", model)
+    model = _norm_spaces(model).upper()
+
+    if not model:
+        # Very defensive fallback.
+        model = upper_main
+
+    return brand, model, storage_gb
 
 
 async def _require_dep_doc(
@@ -462,10 +551,10 @@ async def compute_for_pricing_group(
             "storage_gb": storage_gb,
             "target_condition": str(target_condition),
             "target_grade": target_grade.value,
-            "release_date": release_date,
+            "release_date": datetime(release_date.year, release_date.month, release_date.day, tzinfo=timezone.utc),
             "msrp_amount": msrp_amount,
             "currency": currency,
-            "as_of_date": as_of,
+            "as_of_date": datetime(as_of.year, as_of.month, as_of.day, tzinfo=timezone.utc),
             "age_months": dep_estimate.age_months,
             "curve_version": CURVE_VERSION,
             "retention_excellent": dep_estimate.retention_excellent,
@@ -495,9 +584,15 @@ async def compute_for_pricing_group(
 async def observe(req: DepreciationObserveRequest, db: AsyncIOMotorDatabase = Depends(get_db)):
     market = _u(req.market)
 
+    # Pydantic v2: which fields were explicitly provided (not defaults)
+    fields_set = getattr(req, "model_fields_set", set())
+
     if req.sku:
         brand, model, storage_gb, parsed_grade = parse_sku(str(req.sku))
-        grade = req.grade or parsed_grade
+
+        # IMPORTANT:
+        # Use the SKU-parsed grade unless the caller explicitly provided grade.
+        grade = req.grade if ("grade" in fields_set) else parsed_grade
     else:
         if not (req.brand and req.model and req.storage_gb):
             raise HTTPException(status_code=422, detail="Provide either sku or brand+model+storage_gb")
@@ -578,21 +673,54 @@ async def _observe_from_line(
     """Shared logic for observe-from-order and observe-from-orderline.
 
     Returns (result, observed_at_dt_used).
-    """
-    listing_sku = _extract_listing_sku(line)
-    if not listing_sku:
-        return None, None
 
+    Behavior:
+      1) Try parse from listing SKU (modern SKUs).
+      2) If that fails (or listing is missing), fallback to parsing from `product`
+         using `brand` as a hint.
+    """
     observed_price = _extract_price(line)
     if observed_price is None:
         return None, None
 
     observed_at_dt = _extract_observed_dt(line, fallback=order_dt_fallback)
 
+    listing_sku = _extract_listing_sku(line)
+
+    # Primary: SKU parse
+    if listing_sku:
+        try:
+            # Use sku and let `observe()` derive grade from sku unless caller overrides grade.
+            obs_req = DepreciationObserveRequest(
+                user_id=user_id,
+                market=market,
+                sku=listing_sku,
+                observed_price=observed_price,
+                observed_at=observed_at_dt.date(),
+                scope=scope,
+                weight=weight,
+            )
+            return await observe(obs_req, db), observed_at_dt
+        except ValueError:
+            # SKU not parseable -> fall through to product parsing
+            pass
+
+    # Fallback: product + brand hint parse
+    product_name = _extract_product_name(line)
+    brand_hint = _extract_brand_hint(line)
+
+    if not product_name:
+        return None, None
+
     try:
-        brand, model, storage_gb, grade = parse_sku(listing_sku)
+        brand, model, storage_gb = _parse_device_from_product(product=product_name, brand_hint=brand_hint)
     except ValueError:
         return None, None
+
+    # Best-effort grade for fallback (often unavailable in product text).
+    # If nothing recognisable is present, default to GOOD.
+    grade_raw = line.get("grade") or line.get("condition") or line.get("listing_condition") or ""
+    fallback_grade = normalize_grade(str(grade_raw), default=Grade.GOOD)
 
     obs_req = DepreciationObserveRequest(
         user_id=user_id,
@@ -602,7 +730,7 @@ async def _observe_from_line(
         storage_gb=storage_gb,
         observed_price=observed_price,
         observed_at=observed_at_dt.date(),
-        grade=grade,
+        grade=fallback_grade,
         scope=scope,
         weight=weight,
     )
@@ -650,7 +778,7 @@ async def observe_from_orderline(
     )
 
     if res is None:
-        raise HTTPException(status_code=422, detail="bm_orderline missing listing/price or sku not parseable")
+        raise HTTPException(status_code=422, detail="bm_orderline missing price or (sku/product) not parseable")
 
     used_sku = _extract_listing_sku(line)
     used_price = _extract_price(line)
@@ -700,15 +828,20 @@ async def observe_from_order(
 
     results: List[DepreciationObserveResponse] = []
     for ol in _iter_orderlines(lines_any or []):
-        res, _dt_used = await _observe_from_line(
-            user_id=req.user_id,
-            market=market,
-            line=ol,
-            order_dt_fallback=order_dt,
-            scope=scope,
-            weight=req.weight,
-            db=db,
-        )
+        try:
+            res, _dt_used = await _observe_from_line(
+                user_id=req.user_id,
+                market=market,
+                line=ol,
+                order_dt_fallback=order_dt,
+                scope=scope,
+                weight=req.weight,
+                db=db,
+            )
+        except HTTPException:
+            # Skip lines we can't observe (e.g. missing depreciation model seed data)
+            continue
+
         if res is not None:
             results.append(res)
 
@@ -719,4 +852,163 @@ async def observe_from_order(
     )
 
 
+@router.get("/catalog", response_model=DepreciationCatalogResponse)
+async def catalog(
+    user_id: str,
+    market: str = "GB",
+    as_of_date: Optional[date] = None,
+    grade: Grade = Grade.GOOD,
+    include_unseeded: bool = True,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    mkt = _u(market)
+    as_of = as_of_date or date.today()
+
+    # 1) Device set from pricing_groups (same source idea as repair-costs)
+    pg_counts: Dict[Tuple[str, str, int], int] = {}
+    cursor = db["pricing_groups"].find(
+        {"user_id": user_id},
+        {"brand": 1, "model": 1, "storage_gb": 1, "trade_sku": 1, "markets": 1},
+    )
+    async for pg in cursor:
+        pg_mkt = _u((pg.get("markets") or ["GB"])[0])
+        if pg_mkt != mkt:
+            continue
+
+        b = _u(pg.get("brand", ""))
+        mo = _u(pg.get("model", ""))
+        try:
+            sg = int(pg.get("storage_gb") or 0)
+        except (TypeError, ValueError):
+            sg = 0
+
+        if (not b or not mo or not sg) and pg.get("trade_sku"):
+            try:
+                b2, mo2, sg2, _g = parse_sku(str(pg["trade_sku"]))
+                b = b or b2
+                mo = mo or mo2
+                sg = sg or sg2
+            except Exception:
+                pass
+
+        if not b or not mo or not sg:
+            continue
+
+        k = (b, mo, sg)
+        pg_counts[k] = pg_counts.get(k, 0) + 1
+
+    # 2) Seeded depreciation models
+    model_docs = await db["depreciation_models"].find({"user_id": user_id, "market": mkt}).to_list(length=None)
+    models_by_key: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+    for d in model_docs:
+        b = _u(d.get("brand", ""))
+        mo = _u(d.get("model", ""))
+        try:
+            sg = int(d.get("storage_gb") or 0)
+        except (TypeError, ValueError):
+            sg = 0
+        if b and mo and sg:
+            models_by_key[(b, mo, sg)] = d
+
+    # 3) Multipliers (load once)
+    mult_docs = await db["depreciation_multipliers"].find({"user_id": user_id, "market": mkt}).to_list(length=None)
+    mult_by_key: Dict[str, Dict[str, Any]] = {str(d.get("key")): d for d in mult_docs if d.get("key")}
+
+    # 4) Union keys
+    keys = set(models_by_key.keys())
+    if include_unseeded:
+        keys |= set(pg_counts.keys())
+
+    def _as_date(v: Any) -> Optional[date]:
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v.date()
+        if isinstance(v, date):
+            return v
+        return None
+
+    items: List[DepreciationCatalogItem] = []
+
+    for (b, mo, sg) in sorted(keys, key=lambda x: (x[0], x[1], x[2])):
+        dep = models_by_key.get((b, mo, sg))
+        seeded = bool(dep and dep.get("release_date") and dep.get("msrp_amount"))
+
+        seg = _segment_from_doc_value(dep.get("segment") if dep else None, fallback=derive_segment(b, mo))
+        currency = str(dep.get("currency") if dep else "GBP") or "GBP"
+
+        rel = _as_date(dep.get("release_date") if dep else None)
+        msrp = float(dep.get("msrp_amount")) if (dep and dep.get("msrp_amount") is not None) else None
+
+        # Multiplier: sku->model->segment->global
+        mult = 1.0
+        mult_source = "none"
+        mult_n = 0
+        mult_updated_at = None
+
+        candidates = build_multiplier_keys(
+            market=mkt,
+            brand=b,
+            model=mo,
+            storage_gb=sg,
+            segment=str(seg.value),
+        )
+        for k in candidates:
+            md = mult_by_key.get(k)
+            if md:
+                log_m = float(md.get("log_m", 0.0))
+                mult = float(math.exp(log_m))
+                mult_source = k
+                mult_n = int(md.get("n", 0) or 0)
+                mult_updated_at = md.get("updated_at")
+                break
+
+        age_m = None
+        pred_ex = pred_good = pred_fair = pred_sel = None
+
+        if seeded and rel and msrp:
+            age_m = months_since(rel, as_of)
+            curve = SEED_CURVES_EXCELLENT[seg]
+            ret_ex = retention_at(age_m, curve)
+
+            base_ex = msrp * ret_ex
+            ex = base_ex * mult
+            good = ex * float(GRADE_MULTIPLIERS[Grade.GOOD])
+            fair = ex * float(GRADE_MULTIPLIERS[Grade.FAIR])
+            sel = ex * grade_multiplier(grade)
+
+            pred_ex = round_gbp(ex)
+            pred_good = round_gbp(good)
+            pred_fair = round_gbp(fair)
+            pred_sel = round_gbp(sel)
+
+        items.append(
+            DepreciationCatalogItem(
+                device_key=f"{b}|{mo}|{sg}",
+                market=mkt,
+                brand=b,
+                model=mo,
+                storage_gb=sg,
+                currency=currency,
+                segment=seg,
+                seeded=seeded,
+                release_date=rel,
+                msrp_amount=msrp,
+                as_of_date=as_of,
+                grade=grade,
+                age_months=round(age_m, 2) if age_m is not None else None,
+                multiplier=round(mult, 6),
+                multiplier_source=mult_source,
+                multiplier_n=mult_n,
+                multiplier_updated_at=mult_updated_at,
+                predicted_excellent=pred_ex,
+                predicted_good=pred_good,
+                predicted_fair=pred_fair,
+                predicted_for_grade=pred_sel,
+                pricing_group_count=int(pg_counts.get((b, mo, sg), 0)),
+                model_updated_at=(dep.get("updated_at") if dep else None),
+            )
+        )
+
+    return DepreciationCatalogResponse(items=items)
 
