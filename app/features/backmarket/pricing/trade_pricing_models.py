@@ -29,3 +29,10 @@ class TradePricingGroupSettingsIn(BaseModel):
     required_profit: Optional[float] = Field(None, ge=0)
     required_margin: Optional[float] = Field(None, ge=0, le=1)
 
+    # Group-level safety toggle.
+    #
+    # Semantics:
+    #   - missing / null / false => offers are considered disabled for this group
+    #   - true => offers are enabled for this group
+    offer_enabled: Optional[bool] = None
+

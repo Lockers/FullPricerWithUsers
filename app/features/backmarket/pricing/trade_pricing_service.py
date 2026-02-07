@@ -170,18 +170,52 @@ def _get_nested(d: Dict[str, Any], path: str, default: Any = None) -> Any:
 
 
 def _extract_net_sell_anchor(group: Dict[str, Any]) -> Optional[float]:
+    """Return the net sell anchor that trade-pricing should trust.
+
+    Important: if sell-anchor is in manual_only mode and there is no manual
+    anchor available (needs_manual_anchor=True), trade pricing should NOT fall
+    back to the auto/lowest backbox anchor. That would silently bypass manual
+    review and can cause bad buy prices.
+    """
+
     sell_anchor = group.get("sell_anchor") or {}
-    return _to_pos_float(sell_anchor.get("net_used")) or _to_pos_float(sell_anchor.get("lowest_net_sell_price"))
+
+    # If sell-anchor explicitly says it needs manual input, block.
+    if bool(sell_anchor.get("needs_manual_anchor")):
+        return None
+
+    mode = str(sell_anchor.get("anchor_mode") or "").strip().lower()
+    if mode == "manual_only":
+        # In manual_only, only trust manual-derived values.
+        return _to_pos_float(sell_anchor.get("net_used")) or _to_pos_float(sell_anchor.get("manual_net_sell_price"))
+
+    # In other modes, prefer the selected anchor, then sold data, then auto/backbox.
+    return (
+        _to_pos_float(sell_anchor.get("net_used"))
+        or _to_pos_float(sell_anchor.get("sold_net_sell_price"))
+        or _to_pos_float(sell_anchor.get("lowest_net_sell_price"))
+    )
 
 
 def _extract_gross_sell_anchor(group: Dict[str, Any]) -> Optional[float]:
     """Best-effort gross sell anchor used for display/debug.
 
-    Prefer the sell_anchor.gross_used field (the actual anchor chosen by the sell-anchor
-    selection logic). Fall back to lowest_gross_price_to_win if present.
+    Mirrors _extract_net_sell_anchor behavior for manual_only groups.
     """
     sell_anchor = group.get("sell_anchor") or {}
-    return _to_pos_float(sell_anchor.get("gross_used")) or _to_pos_float(sell_anchor.get("lowest_gross_price_to_win"))
+
+    if bool(sell_anchor.get("needs_manual_anchor")):
+        return None
+
+    mode = str(sell_anchor.get("anchor_mode") or "").strip().lower()
+    if mode == "manual_only":
+        return _to_pos_float(sell_anchor.get("gross_used")) or _to_pos_float(sell_anchor.get("manual_sell_anchor_gross"))
+
+    return (
+        _to_pos_float(sell_anchor.get("gross_used"))
+        or _to_pos_float(sell_anchor.get("sold_recent_median_gross"))
+        or _to_pos_float(sell_anchor.get("lowest_gross_price_to_win"))
+    )
 
 
 def _extract_currency(group: Dict[str, Any]) -> str:
@@ -554,6 +588,10 @@ async def update_trade_pricing_settings_for_group(
         set_doc["trade_pricing.settings.required_margin"] = (
             None if patch["required_margin"] is None else float(patch["required_margin"])
         )
+
+    if "offer_enabled" in patch:
+        # missing / null / false => disabled; true => enabled
+        set_doc["trade_pricing.settings.offer_enabled"] = bool(patch["offer_enabled"]) if patch["offer_enabled"] is not None else None
 
     res = await db[PRICING_GROUPS_COL].update_one({"_id": gid, "user_id": user_id}, {"$set": set_doc})
     if res.matched_count <= 0:
@@ -985,6 +1023,9 @@ def _compute_trade_pricing_for_group_doc(
             ),
             "competitor_net_price_to_win": _round2(competitor_net) if competitor_net is not None else None,
             "competitor_gross_price_to_win": _round2(competitor_gross) if competitor_gross is not None else None,
+            "sell_anchor_confidence": (group.get("sell_anchor") or {}).get("confidence"),
+            "sell_anchor_confidence_label": (group.get("sell_anchor") or {}).get("confidence_label"),
+            "sell_anchor_suggested_source": (group.get("sell_anchor") or {}).get("suggested_source"),
             "repair_costs": repair_costs,
         },
         "scenarios": scenario_docs,

@@ -10,6 +10,9 @@ FeeType = Literal["percent", "fixed"]
 AnchorMode = Literal["manual_only", "auto"]
 
 
+BackboxMetric = Literal["min", "median", "ewma"]
+
+
 class FeeItem(BaseModel):
     key: str
     type: FeeType
@@ -46,7 +49,7 @@ class FeeConfig(BaseModel):
 
 class SellAnchorSettings(BaseModel):
     anchor_mode: AnchorMode = Field(
-        default="manual_only",
+        default="auto",
         description=(
             "Anchor selection strategy. 'manual_only' requires a manual_sell_anchor_gross for the group "
             "(otherwise we mark needs_manual_anchor and pricing will not update offers). "
@@ -83,6 +86,21 @@ class SellAnchorSettings(BaseModel):
         ge=0.0,
         le=0.9,
         description="If the lowest candidate price is more than this % below the rolling average/median, skip to the next lowest.",
+    )
+
+    backbox_metric: BackboxMetric = Field(
+        default="median",
+        description=(
+            "Aggregation method for Backbox history within backbox_lookback_days. "
+            "'min' is most aggressive (lowest recent value), 'median' is most robust, "
+            "and 'ewma' emphasizes the most recent samples."
+        ),
+    )
+    backbox_ewma_alpha: float = Field(
+        default=0.30,
+        ge=0.05,
+        le=0.95,
+        description="EWMA alpha (0..1) used when backbox_metric='ewma'. Higher => more weight on the latest value.",
     )
 
     # Minimum number of viable child prices required for auto pricing.

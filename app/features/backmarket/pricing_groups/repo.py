@@ -56,7 +56,17 @@ class PricingGroupsRepo:
             ops.append(
                 UpdateOne(
                     {"user_id": user_id, "trade_sku": trade_sku},
-                    {"$set": g, "$setOnInsert": {"created_at": now}},
+                    {
+                        "$set": g,
+                        "$setOnInsert": {
+                            "created_at": now,
+                            # Safety default: offers must be explicitly enabled per group.
+                            "trade_pricing": {
+                                "settings": {"offer_enabled": False},
+                                "settings_updated_at": now,
+                            },
+                        },
+                    },
                     upsert=True,
                 )
             )

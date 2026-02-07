@@ -178,6 +178,7 @@ async def run_tradein_offer_update_for_group(
     dry_run: bool = True,
     recompute_pricing: bool = True,
     require_ok_to_update: bool = True,
+    require_offer_enabled: bool = True,
     scenario_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Apply a single group's trade-in offer to Back Market.
@@ -193,6 +194,17 @@ async def run_tradein_offer_update_for_group(
     group = await db[PRICING_GROUPS_COL].find_one({"_id": gid, "user_id": user_id})
     if not group:
         return {"error": "pricing_group_not_found", "user_id": user_id, "group_id": group_id}
+
+    if require_offer_enabled:
+        enabled = _get_nested(group, "trade_pricing.settings.offer_enabled")
+        if enabled is not True:
+            return {
+                "error": "offer_disabled",
+                "user_id": user_id,
+                "group_id": group_id,
+                "trade_sku": str(group.get("trade_sku") or ""),
+                "offer_enabled": bool(enabled) if enabled is not None else False,
+            }
 
     # Ensure trade_pricing is up to date (best-effort).
     if recompute_pricing:
@@ -472,6 +484,108 @@ async def run_tradein_offer_update_for_group(
     }
 
 
+async def disable_tradein_offer_for_group(
+    db: AsyncIOMotorDatabase,
+    *,
+    user_id: str,
+    group_id: str,
+    market: str = "GB",
+    currency: str = "GBP",
+    amount_gross: int = 0,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Disable a group's trade-in offer and push a disabling price to Back Market.
+
+    This does two things:
+      1) sets trade_pricing.settings.offer_enabled=false
+      2) updates the trade-in offer amount on Back Market (default: 0).
+
+    Notes:
+      - If Back Market rejects amount_gross=0, we fall back to 1.
+      - This endpoint is intentionally separate from the settings patch endpoint so the UI can
+        guarantee a price is pushed when turning the toggle off.
+    """
+
+    gid = _parse_object_id(group_id)
+    group = await db[PRICING_GROUPS_COL].find_one({"_id": gid, "user_id": user_id})
+    if not group:
+        return {
+            "error": "group_not_found",
+            "user_id": user_id,
+            "group_id": group_id,
+        }
+
+    trade_sku = str(group.get("trade_sku") or "")
+    tradein_id = _get_nested(group, "tradein_listing.tradein_id")
+    if not tradein_id:
+        return {
+            "error": "missing_tradein_id",
+            "user_id": user_id,
+            "group_id": group_id,
+            "trade_sku": trade_sku,
+        }
+
+    now = _now_utc()
+    await db[PRICING_GROUPS_COL].update_one(
+        {"_id": gid, "user_id": user_id},
+        {
+            "$set": {
+                "trade_pricing.settings.offer_enabled": False,
+                "trade_pricing.settings_updated_at": now,
+                "updated_at": now,
+            }
+        },
+    )
+
+    requested_amount = int(amount_gross)
+    used_amount = requested_amount
+    res = await _update_tradein_offer(
+        db,
+        user_id=user_id,
+        group_id=group_id,
+        trade_sku=trade_sku,
+        tradein_id=tradein_id,
+        market=market,
+        currency=currency,
+        amount_gbp=used_amount,
+        dry_run=dry_run,
+    )
+
+    # If 0 is rejected, try 1 as a best-effort fallback.
+    if (not res.get("ok")) and used_amount == 0 and not dry_run:
+        used_amount = 1
+        res2 = await _update_tradein_offer(
+            db,
+            user_id=user_id,
+            group_id=group_id,
+            trade_sku=trade_sku,
+            tradein_id=tradein_id,
+            market=market,
+            currency=currency,
+            amount_gbp=used_amount,
+            dry_run=dry_run,
+        )
+        res = {
+            "ok": bool(res2.get("ok")),
+            "fallback_from": 0,
+            "fallback_to": 1,
+            "first_attempt": res,
+            "second_attempt": res2,
+        }
+
+    return {
+        "user_id": user_id,
+        "group_id": group_id,
+        "trade_sku": trade_sku,
+        "tradein_id": tradein_id,
+        "disabled": True,
+        "requested_amount_gross": requested_amount,
+        "amount_gross": used_amount,
+        "dry_run": bool(dry_run),
+        "result": res,
+    }
+
+
 async def run_tradein_offer_updates_for_user(
     db: AsyncIOMotorDatabase,
     *,
@@ -482,6 +596,7 @@ async def run_tradein_offer_updates_for_user(
     limit: Optional[int] = None,
     dry_run: bool = True,
     require_ok_to_update: bool = True,
+    require_offer_enabled: bool = True,
     include_item_results: bool = False,
 ) -> Dict[str, Any]:
     """Apply offers for all pricing_groups for the user (optionally market-filtered)."""
@@ -504,18 +619,35 @@ async def run_tradein_offer_updates_for_user(
     if require_ok_to_update:
         q["trade_pricing.ok_to_update"] = True
 
+    if require_offer_enabled:
+        q["trade_pricing.settings.offer_enabled"] = True
+
     # Prefer market-filtered if schema supports it; fall back if it yields zero.
     q_market = dict(q)
     q_market["$or"] = [{"markets": mkt}, {"tradein_listing.markets": mkt}]
 
-    cursor = db[PRICING_GROUPS_COL].find(q_market, projection={"trade_sku": 1, "tradein_listing.tradein_id": 1, "trade_pricing.final_update_price_gross": 1})
+    cursor = db[PRICING_GROUPS_COL].find(
+        q_market,
+        projection={
+            "trade_sku": 1,
+            "tradein_listing.tradein_id": 1,
+            "trade_pricing.final_update_price_gross": 1,
+        },
+    )
     if limit is not None:
         cursor = cursor.limit(int(limit))
 
     refs = await cursor.to_list(length=None)
 
     if not refs:
-        cursor2 = db[PRICING_GROUPS_COL].find(q, projection={"trade_sku": 1, "tradein_listing.tradein_id": 1, "trade_pricing.final_update_price_gross": 1})
+        cursor2 = db[PRICING_GROUPS_COL].find(
+            q,
+            projection={
+                "trade_sku": 1,
+                "tradein_listing.tradein_id": 1,
+                "trade_pricing.final_update_price_gross": 1,
+            },
+        )
         if limit is not None:
             cursor2 = cursor2.limit(int(limit))
         refs = await cursor2.to_list(length=None)
@@ -560,6 +692,7 @@ async def run_tradein_offer_updates_for_user(
                 dry_run=dry_run,
                 recompute_pricing=False,
                 require_ok_to_update=require_ok_to_update,
+                require_offer_enabled=require_offer_enabled,
             )
         if res.get("ok"):
             ok_count += 1
@@ -578,6 +711,7 @@ async def run_tradein_offer_updates_for_user(
         "currency": cur,
         "dry_run": bool(dry_run),
         "require_ok_to_update": bool(require_ok_to_update),
+        "require_offer_enabled": bool(require_offer_enabled),
         "attempted": len(apply_refs),
         "ok": ok_count,
         "errors": err_count,

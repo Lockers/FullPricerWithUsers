@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import statistics
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
@@ -118,6 +119,24 @@ def _median(xs: list[float]) -> Optional[float]:
     return (ys[mid - 1] + ys[mid]) / 2.0
 
 
+def _clamp01(x: float) -> float:
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
+    return x
+
+
+def _confidence_label(conf: Optional[float]) -> Optional[str]:
+    if conf is None:
+        return None
+    if conf >= 0.75:
+        return "HIGH"
+    if conf >= 0.50:
+        return "MED"
+    return "LOW"
+
+
 
 def _fee_config_or_default(raw: Any) -> FeeConfig:
     """
@@ -170,8 +189,10 @@ def _extract_recent_best_price_to_win(
     *,
     now: datetime,
     lookback_days: int,
+    metric: str = "min",
+    ewma_alpha: float = 0.30,
 ) -> Optional[float]:
-    """Return the best (lowest) Backbox price_to_win within a recent time window.
+    """Return a robust Backbox price_to_win anchor within a recent time window.
 
     The current implementation of backbox persistence keeps:
       - `backbox_history`: up to the last 50 snapshots
@@ -182,7 +203,7 @@ def _extract_recent_best_price_to_win(
     """
     cutoff = now - timedelta(days=max(1, int(lookback_days)))
     hist = listing.get("backbox_history") or []
-    prices: list[float] = []
+    samples: list[tuple[datetime, float]] = []
 
     if isinstance(hist, list):
         for h in hist:
@@ -193,10 +214,29 @@ def _extract_recent_best_price_to_win(
                 continue
             p = _to_pos_float(h.get("price_to_win"))
             if p is not None:
-                prices.append(float(p))
+                samples.append((ts, float(p)))
 
-    if prices:
-        return min(prices)
+    if samples:
+        metric_norm = (metric or "min").strip().lower()
+        if metric_norm not in {"min", "median", "ewma"}:
+            metric_norm = "min"
+
+        # Sort by timestamp for EWMA.
+        samples.sort(key=lambda x: x[0])
+        prices = [p for _, p in samples]
+
+        if metric_norm == "min":
+            return float(min(prices))
+        if metric_norm == "median":
+            return float(statistics.median(prices))
+        if metric_norm == "ewma":
+            a = float(ewma_alpha)
+            if not (0.0 < a < 1.0):
+                a = 0.30
+            ewma = prices[0]
+            for p in prices[1:]:
+                ewma = (a * p) + ((1.0 - a) * ewma)
+            return float(ewma)
 
     # Fallback to best-ever / latest snapshot.
     return _extract_best_price_to_win(listing)
@@ -310,6 +350,8 @@ async def get_sell_anchor_settings_for_user(db: AsyncIOMotorDatabase, user_id: s
             "recent_sold_min_samples": s.recent_sold_min_samples,
             "backbox_lookback_days": s.backbox_lookback_days,
             "backbox_outlier_pct": s.backbox_outlier_pct,
+            "backbox_metric": s.backbox_metric,
+            "backbox_ewma_alpha": s.backbox_ewma_alpha,
             "min_viable_child_prices": s.min_viable_child_prices,
             "created_at": None,
             "updated_at": None,
@@ -330,6 +372,14 @@ async def get_sell_anchor_settings_for_user(db: AsyncIOMotorDatabase, user_id: s
         backbox_outlier_pct = float(DEFAULT_SETTINGS.backbox_outlier_pct)
     min_viable_child_prices = int(doc.get("min_viable_child_prices") or DEFAULT_SETTINGS.min_viable_child_prices)
 
+    backbox_metric = str(doc.get("backbox_metric") or DEFAULT_SETTINGS.backbox_metric).strip().lower()
+    if backbox_metric not in {"min", "median", "ewma"}:
+        backbox_metric = DEFAULT_SETTINGS.backbox_metric
+
+    backbox_ewma_alpha = _to_float(doc.get("backbox_ewma_alpha"))
+    if backbox_ewma_alpha is None:
+        backbox_ewma_alpha = float(DEFAULT_SETTINGS.backbox_ewma_alpha)
+
     settings = SellAnchorSettings(
         anchor_mode=anchor_mode,
         safe_ratio=safe_ratio,
@@ -338,6 +388,8 @@ async def get_sell_anchor_settings_for_user(db: AsyncIOMotorDatabase, user_id: s
         recent_sold_min_samples=recent_sold_min_samples,
         backbox_lookback_days=backbox_lookback_days,
         backbox_outlier_pct=backbox_outlier_pct,
+        backbox_metric=backbox_metric,
+        backbox_ewma_alpha=backbox_ewma_alpha,
         min_viable_child_prices=min_viable_child_prices,
     )
 
@@ -350,6 +402,8 @@ async def get_sell_anchor_settings_for_user(db: AsyncIOMotorDatabase, user_id: s
         "recent_sold_min_samples": settings.recent_sold_min_samples,
         "backbox_lookback_days": settings.backbox_lookback_days,
         "backbox_outlier_pct": settings.backbox_outlier_pct,
+        "backbox_metric": settings.backbox_metric,
+        "backbox_ewma_alpha": settings.backbox_ewma_alpha,
         "min_viable_child_prices": settings.min_viable_child_prices,
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
@@ -372,6 +426,8 @@ async def update_sell_anchor_settings_for_user(
             "recent_sold_min_samples": int(settings.recent_sold_min_samples),
             "backbox_lookback_days": int(settings.backbox_lookback_days),
             "backbox_outlier_pct": float(settings.backbox_outlier_pct),
+            "backbox_metric": str(settings.backbox_metric),
+            "backbox_ewma_alpha": float(settings.backbox_ewma_alpha),
             "min_viable_child_prices": int(settings.min_viable_child_prices),
         },
     )
@@ -384,6 +440,8 @@ async def update_sell_anchor_settings_for_user(
         "recent_sold_min_samples": int(saved.get("recent_sold_min_samples") or settings.recent_sold_min_samples),
         "backbox_lookback_days": int(saved.get("backbox_lookback_days") or settings.backbox_lookback_days),
         "backbox_outlier_pct": float(saved.get("backbox_outlier_pct") or settings.backbox_outlier_pct),
+        "backbox_metric": str(saved.get("backbox_metric") or settings.backbox_metric),
+        "backbox_ewma_alpha": float(saved.get("backbox_ewma_alpha") or settings.backbox_ewma_alpha),
         "min_viable_child_prices": int(saved.get("min_viable_child_prices") or settings.min_viable_child_prices),
         "created_at": saved.get("created_at"),
         "updated_at": saved.get("updated_at"),
@@ -400,6 +458,8 @@ def _build_sell_anchor_for_group_doc(
     recent_sold_min_samples: int,
     backbox_lookback_days: int,
     backbox_outlier_pct: float,
+    backbox_metric: str,
+    backbox_ewma_alpha: float,
     min_viable_child_prices: int,
 ) -> Dict[str, Any]:
     now = _now()
@@ -450,7 +510,13 @@ def _build_sell_anchor_for_group_doc(
     # 2) Backbox (auto) - use recent window, and ignore extreme low outliers
     backbox_candidates: list[tuple[float, Dict[str, Any]]] = []
     for l in listings:
-        p = _extract_recent_best_price_to_win(l, now=now, lookback_days=backbox_lookback_days)
+        p = _extract_recent_best_price_to_win(
+            l,
+            now=now,
+            lookback_days=backbox_lookback_days,
+            metric=backbox_metric,
+            ewma_alpha=backbox_ewma_alpha,
+        )
         if p is None:
             continue
         if safe_threshold is not None and p > safe_threshold:
@@ -528,6 +594,22 @@ def _build_sell_anchor_for_group_doc(
     if manual_gross is not None:
         manual_net, manual_fees_total, manual_breakdown = _compute_net(manual_gross, fee_config)
 
+    # 3b) Depreciation fallback (if a depreciation_anchor has been computed for this group)
+    dep_anchor = group.get("depreciation_anchor") or {}
+    dep_gross: Optional[float] = _to_pos_float(
+        dep_anchor.get("predicted_target")
+        or dep_anchor.get("predicted_for_grade")
+        or dep_anchor.get("predicted_excellent")
+    )
+    dep_net: Optional[float] = None
+    dep_fees_total: Optional[float] = None
+    dep_breakdown: list[dict] = []
+    dep_viable = False
+    if dep_gross is not None:
+        dep_net, dep_fees_total, dep_breakdown = _compute_net(dep_gross, fee_config)
+        if dep_net is not None and dep_net > 0 and (safe_threshold is None or dep_gross <= safe_threshold):
+            dep_viable = True
+
     # 4) Select which anchor to use
     gross_used: Optional[float] = None
     net_used: Optional[float] = None
@@ -564,13 +646,141 @@ def _build_sell_anchor_for_group_doc(
             net_used = float(auto_net)
             source_used = "auto"
             used_listing = source_listing
+            reason = "backbox"
+        elif dep_viable and dep_gross is not None and dep_net is not None and dep_net > 0:
+            gross_used = float(dep_gross)
+            net_used = float(dep_net)
+            source_used = "depreciation"
+            used_listing = None
+            reason = "depreciation"
         elif manual_gross is not None and manual_net is not None and manual_net > 0:
             gross_used = float(manual_gross)
             net_used = float(manual_net)
             source_used = "manual"
             used_listing = None
+            reason = "manual_fallback"
         else:
             needs_manual_anchor = True
+            reason = reason or "needs_manual_anchor"
+
+    # 5) Suggested anchor (best available, independent of anchor_mode)
+    # This is useful for UI explanations when anchor_mode='manual_only' or when manual input is missing.
+    suggested_source: Optional[str] = None
+    suggested_gross: Optional[float] = None
+    suggested_net: Optional[float] = None
+    if sold_viable and sold_recent_median_gross is not None and sold_net is not None and sold_net > 0:
+        suggested_source = "sold_recent"
+        suggested_gross = float(sold_recent_median_gross)
+        suggested_net = float(sold_net)
+    elif auto_viable and auto_gross is not None and auto_net is not None and auto_net > 0:
+        suggested_source = "auto"
+        suggested_gross = float(auto_gross)
+        suggested_net = float(auto_net)
+    elif dep_viable and dep_gross is not None and dep_net is not None and dep_net > 0:
+        suggested_source = "depreciation"
+        suggested_gross = float(dep_gross)
+        suggested_net = float(dep_net)
+    elif manual_gross is not None and manual_net is not None and manual_net > 0:
+        # Last resort: if nothing else is viable, "suggest" manual.
+        suggested_source = "manual"
+        suggested_gross = float(manual_gross)
+        suggested_net = float(manual_net)
+
+    # 6) Backbox sample stats within the lookback window (for confidence/debug)
+    bb_cutoff = now - timedelta(days=max(1, int(backbox_lookback_days)))
+    backbox_samples_total = 0
+    backbox_last_at: Optional[datetime] = None
+    for l in listings:
+        for h in (l.get("backbox_history") or []):
+            dt = _as_dt(h.get("fetched_at"))
+            if dt is None or dt < bb_cutoff:
+                continue
+            p = _to_pos_float(h.get("price_to_win"))
+            if p is None:
+                continue
+            backbox_samples_total += 1
+            if backbox_last_at is None or dt > backbox_last_at:
+                backbox_last_at = dt
+
+    # 7) Confidence scoring (heuristic)
+    sold_full_n = max(5, int(recent_sold_min_samples))
+    conf_sold = _clamp01(float(sold_recent_count) / float(sold_full_n)) if sold_recent_count else 0.0
+
+    conf_backbox_listings = _clamp01(
+        float(auto_viable_listings_count) / float(max(1, int(min_viable_child_prices)))
+    )
+    # Expect ~5 samples per listing in-window for full confidence.
+    expected_samples = max(1.0, float(max(1, int(auto_viable_listings_count))) * 5.0)
+    conf_backbox_samples = _clamp01(float(backbox_samples_total) / expected_samples) if backbox_samples_total else 0.0
+    # Don't let conf_backbox collapse to zero just because samples are sparse; listings-count still matters.
+    conf_backbox = conf_backbox_listings * max(0.5, conf_backbox_samples)
+
+    conf_dep = 1.0 if dep_viable else 0.0
+
+    # Agreement penalty if viable signals disagree wildly
+    viable_gross_signals: list[float] = []
+    if sold_viable and sold_recent_median_gross is not None:
+        viable_gross_signals.append(float(sold_recent_median_gross))
+    if auto_viable and auto_gross is not None:
+        viable_gross_signals.append(float(auto_gross))
+    if dep_viable and dep_gross is not None:
+        viable_gross_signals.append(float(dep_gross))
+
+    spread_pct: Optional[float] = None
+    penalty = 1.0
+    if len(viable_gross_signals) >= 2:
+        mx = max(viable_gross_signals)
+        mn = min(viable_gross_signals)
+        if mx > 0:
+            spread_pct = (mx - mn) / mx
+            if spread_pct > 0.40:
+                penalty = 0.70
+            elif spread_pct > 0.25:
+                penalty = 0.85
+
+    def _base_conf_for(src: Optional[str]) -> Optional[float]:
+        if not src:
+            return None
+        if src == "manual":
+            return 0.85
+        if src == "sold_recent":
+            return 0.65 * conf_sold + 0.25 * conf_backbox + 0.10 * conf_dep
+        if src == "auto":
+            return 0.15 * conf_sold + 0.75 * conf_backbox + 0.10 * conf_dep
+        if src == "depreciation":
+            return 0.10 * conf_sold + 0.25 * conf_backbox + 0.65 * conf_dep
+        return None
+
+    manual_delta_gross: Optional[float] = None
+    manual_delta_pct: Optional[float] = None
+    manual_far_from_suggested = False
+    if manual_gross is not None and suggested_gross is not None and suggested_source not in {None, "manual"}:
+        try:
+            manual_delta_gross = abs(float(manual_gross) - float(suggested_gross))
+            if float(suggested_gross) > 0:
+                manual_delta_pct = float(manual_delta_gross) / float(suggested_gross)
+                manual_far_from_suggested = bool(manual_delta_pct > 0.25)
+        except Exception:
+            manual_delta_gross = None
+            manual_delta_pct = None
+            manual_far_from_suggested = False
+
+    used_confidence: Optional[float] = None
+    used_confidence_label: Optional[str] = None
+    if gross_used is not None and net_used is not None and source_used not in {None, "manual_only"}:
+        base = _base_conf_for(source_used)
+        if base is not None:
+            used_confidence = _clamp01(float(base) * float(penalty))
+            if source_used == "manual" and manual_far_from_suggested:
+                used_confidence = _clamp01(used_confidence * 0.75)
+            used_confidence_label = _confidence_label(used_confidence)
+
+    suggested_confidence: Optional[float] = None
+    suggested_confidence_label: Optional[str] = None
+    base_suggested = _base_conf_for(suggested_source)
+    if base_suggested is not None:
+        suggested_confidence = _clamp01(float(base_suggested) * float(penalty))
+        suggested_confidence_label = _confidence_label(suggested_confidence)
 
     return {
         "anchor_mode": mode,
@@ -581,6 +791,8 @@ def _build_sell_anchor_for_group_doc(
         "auto_fee_breakdown": auto_breakdown,
         "backbox_lookback_days": int(backbox_lookback_days),
         "backbox_outlier_pct": float(backbox_outlier_pct),
+        "backbox_metric": str(backbox_metric),
+        "backbox_ewma_alpha": float(backbox_ewma_alpha),
         "backbox_outlier_skipped": bool(backbox_outlier_skipped),
         "backbox_median": backbox_median,
         "backbox_threshold_low": backbox_threshold_low,
@@ -606,10 +818,49 @@ def _build_sell_anchor_for_group_doc(
         "max_price": group_max_price,
         "auto_viable": auto_viable,
         "reason": reason,
+
+        # Suggested (best available) anchor, independent of anchor_mode.
+        # This lets the UI show a clear recommendation even when updates are blocked.
+        "suggested_source": suggested_source,
+        "suggested_gross": suggested_gross,
+        "suggested_net": suggested_net,
+        "suggested_confidence": suggested_confidence,
+        "suggested_confidence_label": suggested_confidence_label,
+
+        # Confidence for the anchor actually used (None when not used / blocked)
+        "confidence": used_confidence,
+        "confidence_label": used_confidence_label,
+        "confidence_spread_pct": spread_pct,
+        "confidence_penalty": penalty,
+        "confidence_components": {
+            "sold": round(float(conf_sold), 4),
+            "backbox": round(float(conf_backbox), 4),
+            "depreciation": float(conf_dep),
+            "backbox_samples_total": int(backbox_samples_total),
+        },
+        "backbox_samples_total": int(backbox_samples_total),
+        "backbox_last_at": backbox_last_at,
+
+        # Manual-vs-suggested diagnostics (for UI warnings)
+        "manual_delta_gross": manual_delta_gross,
+        "manual_delta_pct": manual_delta_pct,
+        "manual_far_from_suggested": bool(manual_far_from_suggested),
+
         "manual_sell_anchor_gross": manual_gross,
         "manual_net_sell_price": manual_net,
         "manual_fees_total": manual_fees_total,
         "manual_fee_breakdown": manual_breakdown,
+
+        # Depreciation fallback fields
+        "depreciation_predicted_target_gross": dep_gross,
+        "depreciation_net_sell_price": dep_net,
+        "depreciation_fees_total": dep_fees_total,
+        "depreciation_fee_breakdown": dep_breakdown,
+        "depreciation_viable": bool(dep_viable),
+        "depreciation_computed_at": dep_anchor.get("computed_at"),
+        "depreciation_as_of_date": dep_anchor.get("as_of_date"),
+        "depreciation_curve_version": dep_anchor.get("curve_version"),
+        "depreciation_multiplier_source": dep_anchor.get("multiplier_source"),
         "gross_used": gross_used,
         "net_used": net_used,
         "source_used": source_used,
@@ -640,6 +891,10 @@ async def recompute_sell_anchor_for_group(
     )
     backbox_lookback_days = int(settings_doc.get("backbox_lookback_days") or DEFAULT_SETTINGS.backbox_lookback_days)
     backbox_outlier_pct = float(settings_doc.get("backbox_outlier_pct") or DEFAULT_SETTINGS.backbox_outlier_pct)
+    backbox_metric = str(settings_doc.get("backbox_metric") or DEFAULT_SETTINGS.backbox_metric).strip().lower()
+    if backbox_metric not in {"min", "median", "ewma"}:
+        backbox_metric = DEFAULT_SETTINGS.backbox_metric
+    backbox_ewma_alpha = float(settings_doc.get("backbox_ewma_alpha") or DEFAULT_SETTINGS.backbox_ewma_alpha)
     min_viable_child_prices = int(
         settings_doc.get("min_viable_child_prices") or DEFAULT_SETTINGS.min_viable_child_prices
     )
@@ -655,6 +910,8 @@ async def recompute_sell_anchor_for_group(
         recent_sold_min_samples=recent_sold_min_samples,
         backbox_lookback_days=backbox_lookback_days,
         backbox_outlier_pct=backbox_outlier_pct,
+        backbox_metric=backbox_metric,
+        backbox_ewma_alpha=backbox_ewma_alpha,
         min_viable_child_prices=min_viable_child_prices,
     )
 
@@ -733,6 +990,10 @@ async def recompute_sell_anchors_for_user(
     )
     backbox_lookback_days = int(settings_doc.get("backbox_lookback_days") or DEFAULT_SETTINGS.backbox_lookback_days)
     backbox_outlier_pct = float(settings_doc.get("backbox_outlier_pct") or DEFAULT_SETTINGS.backbox_outlier_pct)
+    backbox_metric = str(settings_doc.get("backbox_metric") or DEFAULT_SETTINGS.backbox_metric).strip().lower()
+    if backbox_metric not in {"min", "median", "ewma"}:
+        backbox_metric = DEFAULT_SETTINGS.backbox_metric
+    backbox_ewma_alpha = float(settings_doc.get("backbox_ewma_alpha") or DEFAULT_SETTINGS.backbox_ewma_alpha)
     min_viable_child_prices = int(
         settings_doc.get("min_viable_child_prices") or DEFAULT_SETTINGS.min_viable_child_prices
     )
@@ -748,6 +1009,7 @@ async def recompute_sell_anchors_for_user(
         "trade_sku": 1,
         "group_key": 1,
         "manual_sell_anchor_gross": 1,
+        "depreciation_anchor": 1,
         "listings": 1,
     }
 
@@ -789,6 +1051,8 @@ async def recompute_sell_anchors_for_user(
                     recent_sold_min_samples=recent_sold_min_samples,
                     backbox_lookback_days=backbox_lookback_days,
                     backbox_outlier_pct=backbox_outlier_pct,
+                    backbox_metric=backbox_metric,
+                    backbox_ewma_alpha=backbox_ewma_alpha,
                     min_viable_child_prices=min_viable_child_prices,
                 )
                 await repo.update_pricing_group_sell_anchor(db, gid, sell_anchor=sell_anchor)

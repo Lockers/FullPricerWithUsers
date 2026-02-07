@@ -38,6 +38,7 @@ from app.features.backmarket.tradein.competitors_service import (
     run_tradein_competitor_refresh_for_user, stage1_set_all_to_one,
 )
 from app.features.backmarket.tradein.offers_service import (
+    disable_tradein_offer_for_group,
     run_tradein_offer_update_for_group,
     run_tradein_offer_updates_for_user,
 )
@@ -285,6 +286,8 @@ async def apply_tradein_offer_for_group(
             )
         if err in {"missing_tradein_id", "missing_final_update_price"}:
             raise BadRequestError(code=str(err), message=str(err).replace("_", " "), details=applied)
+        if err == "offer_disabled":
+            raise ConflictError(code="offer_disabled", message="Offer updates are disabled for this group", details=applied)
         if err == "not_ok_to_update":
             raise ConflictError(code="not_ok_to_update", message="Not OK to update trade-in offer", details=applied)
 
@@ -298,3 +301,34 @@ async def apply_tradein_offer_for_group(
         "trade_pricing": trade_pricing,
         "apply": applied,
     }
+
+
+@router.post("/offers/{user_id}/disable-group/{group_id}")
+async def disable_tradein_offer_group(
+    user_id: str,
+    group_id: str,
+    market: Optional[str] = Query(None, description="Market code"),
+    currency: Optional[str] = Query(None, description="Currency code"),
+    amount_gross: int = Query(0, ge=0, description="Gross amount to set when disabling"),
+    dry_run: bool = Query(False, description="If true, do not actually update Back Market"),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Disable offer updates for a single group and push a 0 (or fallback) trade-in amount to Back Market."""
+
+    mkt = market or "GB"
+    cur = currency or "GBP"
+    res = await disable_tradein_offer_for_group(
+        db,
+        user_id=user_id,
+        group_id=group_id,
+        market=mkt,
+        currency=cur,
+        amount_gbp=int(amount_gross),
+        dry_run=dry_run,
+    )
+    if res.get("error"):
+        err = res.get("error")
+        if err in {"group_not_found", "missing_tradein_id"}:
+            raise NotFoundError(code=str(err), message=str(err).replace("_", " "), details=res)
+        raise BadRequestError(code=str(err), message=str(err).replace("_", " "), details=res)
+    return res
