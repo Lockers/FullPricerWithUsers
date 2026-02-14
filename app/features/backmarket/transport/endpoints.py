@@ -27,15 +27,15 @@ ENDPOINTS: dict[str, EndpointConfig] = {
         max_rps=40,
         base_concurrency=5,
         min_concurrency=1,
-        max_concurrency=16,
+        max_concurrency=32,
     ),
     "sell_listing_update": EndpointConfig(
         base_rps=5,
         min_rps=4,
-        max_rps=8,
-        base_concurrency=8,
+        max_rps=14,
+        base_concurrency=10,
         min_concurrency=5,
-        max_concurrency=20,
+        max_concurrency=32,
     ),
     "sell_orders_get": EndpointConfig(
         base_rps=6,
@@ -43,7 +43,7 @@ ENDPOINTS: dict[str, EndpointConfig] = {
         max_rps=10,
         base_concurrency=2,
         min_concurrency=1,
-        max_concurrency=6,
+        max_concurrency=32,
     ),
 
     # SELL: competitor/backbox endpoint tends to be stricter. Keep concurrency low.
@@ -51,11 +51,11 @@ ENDPOINTS: dict[str, EndpointConfig] = {
         # Many bot-protected endpoints behave better below 1 rps.
         # Start at 0.75 rps and let the learner explore upward cautiously.
         base_rps=1,
-        min_rps=1,
-        max_rps=7,
+        min_rps=4,
+        max_rps=12,
         base_concurrency=1,
-        min_concurrency=1,
-        max_concurrency=18,
+        min_concurrency=4,
+        max_concurrency=32,
     ),
 
     # TRADE-IN
@@ -65,25 +65,25 @@ ENDPOINTS: dict[str, EndpointConfig] = {
         max_rps=15,
         base_concurrency=2,
         min_concurrency=1,
-        max_concurrency=6,
+        max_concurrency=32,
     ),
     # Update listings (set quantity, etc.)
     "tradein_update": EndpointConfig(
         base_rps=1,
         min_rps=1,
-        max_rps=8,
+        max_rps=10,
         base_concurrency=1,
         min_concurrency=1,
-        max_concurrency=16,
+        max_concurrency=32,
     ),
     # Fetch competitor prices for trade-in listings.
     "tradein_competitors": EndpointConfig(
         base_rps=1,
         min_rps=1,
-        max_rps=8,
+        max_rps=1,
         base_concurrency=1,
         min_concurrency=1,
-        max_concurrency=12,
+        max_concurrency=1,
     ),
 }
 

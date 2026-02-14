@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from typing import Literal, Optional, List
+
 from pydantic import BaseModel, Field, model_validator
 
 
 FeeType = Literal["percent", "fixed"]
 
-
+# How the sell anchor is selected/applied.
 AnchorMode = Literal["manual_only", "auto"]
 
-
+# How we aggregate per-listing Backbox history within the lookback window.
 BackboxMetric = Literal["min", "median", "ewma"]
+
+# Optional guardrail around manual anchors.
+ManualGuardrailMode = Literal["off", "clamp", "block"]
 
 
 class FeeItem(BaseModel):
@@ -53,7 +57,8 @@ class SellAnchorSettings(BaseModel):
         description=(
             "Anchor selection strategy. 'manual_only' requires a manual_sell_anchor_gross for the group "
             "(otherwise we mark needs_manual_anchor and pricing will not update offers). "
-            "'auto' uses recent sold prices (if available) then robust Backbox-derived anchors, with manual as fallback."
+            "'auto' derives a suggested anchor from recent sold + Backbox + depreciation, and may require manual "
+            "input when data is sparse."
         ),
     )
 
@@ -71,7 +76,7 @@ class SellAnchorSettings(BaseModel):
         default=1,
         ge=1,
         le=50,
-        description="Minimum number of sales in the lookback window before we treat sales as a primary anchor.",
+        description="Minimum number of sales in the lookback window before we treat sales as a viable signal.",
     )
 
     # Backbox robustness
@@ -79,13 +84,13 @@ class SellAnchorSettings(BaseModel):
         default=14,
         ge=1,
         le=365,
-        description="Use Backbox history within this lookback window (days) when deriving auto anchors.",
+        description="Use Backbox history within this lookback window (days) when deriving Backbox signals.",
     )
     backbox_outlier_pct: float = Field(
         default=0.20,
         ge=0.0,
         le=0.9,
-        description="If the lowest candidate price is more than this % below the rolling average/median, skip to the next lowest.",
+        description="Used for UI/debug. Historically used to skip extreme low outliers for a 'min' anchor.",
     )
 
     backbox_metric: BackboxMetric = Field(
@@ -103,9 +108,36 @@ class SellAnchorSettings(BaseModel):
         description="EWMA alpha (0..1) used when backbox_metric='ewma'. Higher => more weight on the latest value.",
     )
 
-    # Minimum number of viable child prices required for auto pricing.
-    # (Previously a constant in sell_anchor_service.py)
+    # Minimum number of viable child prices required before we trust Backbox-derived values for auto.
     min_viable_child_prices: int = Field(default=5, ge=1, le=50)
+
+    # Blend weights (used when multiple signals exist).
+    # These do NOT need to sum to 1; they are normalized in code.
+    sold_weight: float = Field(default=0.60, ge=0.0, le=1.0)
+    backbox_weight: float = Field(default=0.35, ge=0.0, le=1.0)
+    depreciation_weight: float = Field(default=0.05, ge=0.0, le=1.0)
+
+    # Baseline guard: prevent suggested/used sell anchors from being too far above the lowest-ever observed value.
+    baseline_cap_enabled: bool = Field(default=True)
+    baseline_max_above_lowest_pct: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=5.0,
+        description="Cap is lowest_ever * (1 + baseline_max_above_lowest_pct).",
+    )
+
+    # Manual baseline rule for sparse Backbox coverage (< min_viable_child_prices).
+    require_manual_below_min_backboxes: bool = Field(default=True)
+    manual_baseline_weight: float = Field(
+        default=0.60,
+        ge=0.0,
+        le=1.0,
+        description="When manual baseline is applied: used = w*manual + (1-w)*suggested.",
+    )
+
+    # Manual guardrail (optional) - keeps auto-derived anchors within a band around manual.
+    manual_guardrail_mode: ManualGuardrailMode = Field(default="off")
+    manual_guardrail_pct: float = Field(default=0.25, ge=0.0, le=5.0)
 
     @model_validator(mode="after")
     def _validate_settings(self) -> "SellAnchorSettings":
@@ -118,5 +150,9 @@ class SellAnchorSettings(BaseModel):
             raise ValueError("backbox_lookback_days must be >= 1")
         if int(self.min_viable_child_prices) < 1:
             raise ValueError("min_viable_child_prices must be >= 1")
-        return self
 
+        w_sum = float(self.sold_weight) + float(self.backbox_weight) + float(self.depreciation_weight)
+        if w_sum <= 0.0:
+            raise ValueError("At least one of sold_weight/backbox_weight/depreciation_weight must be > 0")
+
+        return self
